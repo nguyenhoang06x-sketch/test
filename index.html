@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Tải ảnh đề cương, để AI tách câu hỏi và ôn tập trắc nghiệm ngay trên trình duyệt.">
+  <meta name="theme-color" content="#6366f1">
+  <meta name="color-scheme" content="light dark">
+  <title>Ôn đề cương từ ảnh</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop stop-color='%236366f1'/%3E%3Cstop offset='1' stop-color='%238b5cf6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='16' fill='url(%23g)'/%3E%3Cpath d='M20 18h24v28H20z' fill='none' stroke='white' stroke-width='3' stroke-linejoin='round'/%3E%3Cpath d='M26 27h12M26 34h12M26 41h7' stroke='white' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+  <script src="script.js" defer></script>
+</head>
+<body>
+  <div class="ambient" aria-hidden="true">
+    <span class="ambient__orb ambient__orb--one"></span>
+    <span class="ambient__orb ambient__orb--two"></span>
+    <span class="ambient__orb ambient__orb--three"></span>
+  </div>
+
+  <header class="topbar">
+    <div class="topbar__inner">
+      <button class="brand" type="button" id="brandHome" aria-label="Về trang chủ">
+        <span class="brand__mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M6 3.5h9.5L19 7v13.5H6z"></path>
+            <path d="M15 3.5V7h3.5M9 11h6M9 14.5h6M9 18h3.5"></path>
+          </svg>
+        </span>
+        <span class="brand__text">
+          <strong>Ôn đề cương</strong>
+          <small>từ ảnh</small>
+        </span>
+      </button>
+
+      <button class="icon-button theme-toggle" type="button" id="themeToggle" aria-label="Chuyển sang chế độ tối" title="Đổi giao diện sáng/tối">
+        <span id="themeIcon" aria-hidden="true"></span>
+      </button>
+    </div>
+  </header>
+
+  <main id="app" class="app-shell"></main>
+
+  <div class="ai-bubble" id="aiBubble">
+    <div class="ai-bubble__panel" id="aiSettingsPanel" role="dialog" aria-modal="false" aria-labelledby="aiSettingsTitle" aria-hidden="true" tabindex="-1" inert>
+      <div class="ai-bubble__head">
+        <span class="ai-bubble__head-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 7h10M18 7h2M4 17h2M10 17h10"></path>
+            <circle cx="16" cy="7" r="2"></circle>
+            <circle cx="8" cy="17" r="2"></circle>
+          </svg>
+        </span>
+        <div class="ai-bubble__head-text">
+          <h2 id="aiSettingsTitle">Cài đặt AI</h2>
+          <p>API key và model đọc ảnh</p>
+        </div>
+        <span class="status-pill status-pill--missing" id="settingsStatus">Chưa có key</span>
+      </div>
+
+      <div class="ai-bubble__body">
+        <form class="settings-form" id="aiSettingsForm" novalidate>
+          <div class="field">
+            <label for="aiBaseUrl">Địa chỉ API</label>
+            <input id="aiBaseUrl" name="baseUrl" type="text" inputmode="url" value="" placeholder="https://motapis.com/v1" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="field">
+            <label for="aiApiKey">API key</label>
+            <div class="password-wrap">
+              <input id="aiApiKey" name="apiKey" type="password" value="" placeholder="Nhập API key của bạn" autocomplete="new-password" spellcheck="false">
+              <button class="icon-button password-toggle" type="button" data-action="toggle-key" aria-label="Hiện API key" title="Hiện/ẩn API key">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"></path>
+                  <circle cx="12" cy="12" r="3"></circle>
+                </svg>
+              </button>
+            </div>
+            <span class="field__hint">Key chỉ lưu trong localStorage của trình duyệt này. Không ghi key vào mã nguồn.</span>
+          </div>
+          <div class="field">
+            <label for="aiModels">Danh sách model đọc ảnh</label>
+            <input id="aiModels" name="models" type="text" value="" placeholder="claude-sonnet-5-5, claude-sonnet-5, gpt-6-luna, claude-sonnet-4-6" autocomplete="off" spellcheck="false">
+            <span class="field__hint">Cách nhau bằng dấu phẩy. Hệ thống thử lần lượt từng model, model lỗi sẽ tự chuyển sang model kế tiếp.</span>
+          </div>
+          <button class="btn btn--primary" type="submit">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M5 3h12l2 2v16H5V3Z"></path>
+              <path d="M8 3v6h7V3M8 21v-7h8v7"></path>
+            </svg>
+            Lưu cài đặt
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <button class="ai-bubble__toggle" id="aiBubbleToggle" type="button" aria-label="Mở cài đặt AI" aria-expanded="false" aria-controls="aiSettingsPanel" title="Cài đặt AI">
+      <span class="ai-bubble__glyph ai-bubble__glyph--settings" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 7h10M18 7h2M4 17h2M10 17h10"></path>
+          <circle cx="16" cy="7" r="2"></circle>
+          <circle cx="8" cy="17" r="2"></circle>
+        </svg>
+      </span>
+      <span class="ai-bubble__glyph ai-bubble__glyph--close" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m6 6 12 12M18 6 6 18"></path>
+        </svg>
+      </span>
+      <span class="ai-bubble__dot" id="aiBubbleDot" aria-hidden="true"></span>
+    </button>
+  </div>
+
+  <div id="toastContainer" class="toast-container" aria-live="polite" aria-atomic="false"></div>
+
+  <noscript>
+    <div class="noscript">Trang cần JavaScript để hoạt động. Vui lòng bật JavaScript trong trình duyệt.</div>
+  </noscript>
+</body>
+</html>
