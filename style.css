@@ -828,6 +828,19 @@ svg {
   line-height: 1.45;
 }
 
+.auto-answer-option {
+  margin-top: 12px;
+}
+
+.type-option--check input {
+  border-radius: 6px;
+}
+
+.type-option--check input:checked {
+  border-width: 5px;
+  border-radius: 5px;
+}
+
 .upload-actions {
   display: flex;
   align-items: center;
@@ -1477,6 +1490,42 @@ svg {
   gap: 8px;
 }
 
+.check-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+  padding: 13px 16px;
+}
+
+.check-filters__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 750;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.check-filters__label .icon {
+  width: 16px;
+  height: 16px;
+}
+
+.check-filters__buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.check-filter-btn.is-active {
+  border-color: var(--border-strong);
+  background: var(--primary-soft-strong);
+  color: var(--primary-text);
+}
+
 .check-status {
   display: flex;
   align-items: center;
@@ -1586,6 +1635,29 @@ svg {
   color: #c4b5fd;
 }
 
+.tag--sm {
+  padding: 2px 7px;
+  font-size: 0.62rem;
+}
+
+.tag--confidence--cao {
+  border-color: rgba(16, 185, 129, 0.25);
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.tag--confidence--vua {
+  border-color: rgba(245, 158, 11, 0.25);
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.tag--confidence--thap {
+  border-color: rgba(239, 68, 68, 0.25);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
 .check-card__spacer {
   flex: 1;
 }
@@ -1630,6 +1702,16 @@ svg {
   border-color: var(--primary);
   background: var(--surface-solid);
   box-shadow: var(--focus);
+}
+
+.check-field textarea.check-explanation-input {
+  border-color: rgba(139, 92, 246, 0.24);
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.06), rgba(139, 92, 246, 0.06));
+}
+
+.check-field textarea.check-explanation-input:focus {
+  border-color: var(--primary);
+  background: var(--surface-solid);
 }
 
 .check-question-input {

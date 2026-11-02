@@ -26,7 +26,7 @@ const TYPE_INFO = {
   1: {
     short: 'Có sẵn A–D',
     title: 'Đề đã có lựa chọn A, B, C, D',
-    desc: 'AI chép nguyên văn câu hỏi, các lựa chọn và tìm đáp án đúng theo dấu hiệu có trong ảnh.'
+    desc: 'AI chép nguyên văn câu hỏi, các lựa chọn và dùng dấu hiệu trong ảnh; nếu ảnh chưa có đáp án, AI tự chọn đáp án đúng nhất.'
   },
   2: {
     short: 'Hỏi – đáp',
@@ -47,15 +47,20 @@ QUY TẮC CHUNG BẮT BUỘC:
 1. Giữ đúng tiếng Việt có dấu, không tự ý dịch hoặc sửa nội dung.
 2. Không bỏ sót bất kỳ câu hỏi nào xuất hiện trong ảnh. Nếu ảnh có nhiều câu, trả về đủ tất cả.
 3. Mỗi câu phải có đúng 4 lựa chọn trong mảng "o", không thêm ký hiệu A., B., C., D. ở đầu nội dung lựa chọn.
-4. "a" là chỉ số 0, 1, 2 hoặc 3 của đáp án đúng trong mảng "o"; dùng null nếu không thể xác định chắc chắn.
-5. "e" là giải thích ngắn gọn bằng tiếng Việt; có thể để chuỗi rỗng nếu không cần thiết.
-6. Không thêm câu hỏi không có trong ảnh, không thêm chữ ngoài JSON.
+4. "a" là chỉ số 0, 1, 2 hoặc 3 của đáp án đúng trong mảng "o". Chỉ dùng null khi câu hỏi hoặc các lựa chọn bị mờ, cụt, không đọc được; không được để null chỉ vì ảnh không có dấu hiệu đáp án.
+5. "e" bắt buộc phải có: giải thích ngắn gọn 1–2 câu bằng tiếng Việt nêu lý do chọn đáp án đó.
+6. "ai_chon": true nếu đáp án do bạn tự chọn theo kiến thức vì ảnh không có dấu hiệu đáp án; false nếu đáp án lấy từ dấu hiệu có trong ảnh.
+7. "do_tin_cay": "cao", "vua" hoặc "thap" để cho biết độ tin cậy của đáp án bạn chọn.
+8. Không thêm câu hỏi không có trong ảnh, không thêm chữ ngoài JSON.
 
 ĐỊNH DẠNG BẮT BUỘC:
-{"questions":[{"q":"câu hỏi","o":["đáp án 1","đáp án 2","đáp án 3","đáp án 4"],"a":0,"e":"giải thích ngắn"}]}
+{"questions":[{"q":"câu hỏi","o":["đáp án 1","đáp án 2","đáp án 3","đáp án 4"],"a":0,"e":"giải thích ngắn 1–2 câu","ai_chon":true,"do_tin_cay":"cao"}]}
 
 NHIỆM VỤ RIÊNG:
-Ảnh là đề cương trắc nghiệm đã có sẵn các lựa chọn A, B, C, D. Hãy chép nguyên văn câu hỏi và nội dung các lựa chọn, bỏ ký hiệu A., B., C., D. ở đầu mỗi lựa chọn. Xác định đáp án đúng dựa vào dấu hiệu trong ảnh như gạch chân, tô đậm, khoanh tròn, đánh dấu tích, tô màu hoặc bảng đáp án. Nếu không thấy dấu hiệu rõ ràng, đặt "a": null. Không tự suy đoán đáp án khi ảnh không có dấu hiệu.`,
+Ảnh là đề cương trắc nghiệm đã có sẵn các lựa chọn A, B, C, D. Hãy chép nguyên văn câu hỏi và nội dung các lựa chọn, bỏ ký hiệu A., B., C., D. ở đầu mỗi lựa chọn.
+Bước 1 — Tìm dấu hiệu đáp án trong ảnh: gạch chân, tô đậm, khoanh tròn, đánh dấu tích, tô màu hoặc bảng đáp án. Nếu có dấu hiệu, dùng đúng đáp án đó, đặt "ai_chon": false và "do_tin_cay": "cao" (hoặc "vua" nếu dấu hiệu không thật rõ).
+Bước 2 — Nếu KHÔNG có bất kỳ dấu hiệu đáp án nào, hãy tự chọn đáp án đúng nhất theo kiến thức của bạn, đặt "ai_chon": true và "do_tin_cay" phù hợp. Tuyệt đối không để "a": null chỉ vì ảnh không có dấu hiệu; chỉ để null khi câu hỏi bị mờ, cụt hoặc không đọc được.
+Luôn viết "e" 1–2 câu nêu lý do chọn đáp án để người dùng kiểm tra lại.`,
   2: `Bạn là trợ lý số hóa đề cương học tập. Hãy đọc ảnh được gửi và trả về DUY NHẤT một đối tượng JSON hợp lệ, không dùng Markdown, không thêm lời chào hay bất kỳ chữ nào bên ngoài JSON.
 
 QUY TẮC CHUNG BẮT BUỘC:
@@ -88,11 +93,31 @@ NHIỆM VỤ RIÊNG:
 Ảnh chỉ có câu hỏi, chưa có đáp án. Với mỗi câu hỏi trong ảnh, hãy tự soạn 4 đáp án ngắn gọn, rõ ràng, hợp lý; chỉ có một đáp án đúng theo kiến thức. Chọn đáp án đúng, ghi chỉ số vào "a" và viết "e" giải thích ngắn. Các đáp án sai phải có văn phong và độ dài tương đương, không quá dễ loại trừ. Không bịa thêm câu hỏi ngoài ảnh.`
 };
 
+/* Dùng khi người dùng tắt ô "Nếu ảnh chưa có đáp án, để AI tự chọn". */
+const PROMPTS_1_NO_AI = `Bạn là trợ lý số hóa đề cương học tập. Hãy đọc ảnh được gửi và trả về DUY NHẤT một đối tượng JSON hợp lệ, không dùng Markdown, không thêm lời chào hay bất kỳ chữ nào bên ngoài JSON.
+
+QUY TẮC CHUNG BẮT BUỘC:
+1. Giữ đúng tiếng Việt có dấu, không tự ý dịch hoặc sửa nội dung.
+2. Không bỏ sót bất kỳ câu hỏi nào xuất hiện trong ảnh. Nếu ảnh có nhiều câu, trả về đủ tất cả.
+3. Mỗi câu phải có đúng 4 lựa chọn trong mảng "o", không thêm ký hiệu A., B., C., D. ở đầu nội dung lựa chọn.
+4. "a" là chỉ số 0, 1, 2 hoặc 3 của đáp án đúng trong mảng "o"; dùng null nếu không thể xác định chắc chắn.
+5. "e" bắt buộc phải có: giải thích ngắn gọn 1–2 câu bằng tiếng Việt nêu lý do; nếu không thấy dấu hiệu đáp án, ghi rõ là không tìm thấy dấu hiệu trong ảnh.
+6. "ai_chon": luôn false trong chế độ này vì bạn không được tự chọn đáp án.
+7. "do_tin_cay": "cao", "vua" hoặc "thap" theo độ rõ của dấu hiệu đáp án trong ảnh.
+8. Không thêm câu hỏi không có trong ảnh, không thêm chữ ngoài JSON.
+
+ĐỊNH DẠNG BẮT BUỘC:
+{"questions":[{"q":"câu hỏi","o":["đáp án 1","đáp án 2","đáp án 3","đáp án 4"],"a":0,"e":"giải thích ngắn 1–2 câu","ai_chon":false,"do_tin_cay":"cao"}]}
+
+NHIỆM VỤ RIÊNG:
+Ảnh là đề cương trắc nghiệm đã có sẵn các lựa chọn A, B, C, D. Hãy chép nguyên văn câu hỏi và nội dung các lựa chọn, bỏ ký hiệu A., B., C., D. ở đầu mỗi lựa chọn. Xác định đáp án đúng dựa vào dấu hiệu trong ảnh như gạch chân, tô đậm, khoanh tròn, đánh dấu tích, tô màu hoặc bảng đáp án. Nếu không thấy dấu hiệu rõ ràng, đặt "a": null, "ai_chon": false và "do_tin_cay": "thap". Không tự suy đoán đáp án khi ảnh không có dấu hiệu.`;
+
 const state = {
   view: 'home',
   cfg: null,
   selectedImages: [], // [{ file, url }]
   draftType: 1,
+  allowAIAnswer: true,
   processing: false,
   progress: { text: '', detail: '', percent: 0 },
   check: null,
@@ -192,6 +217,48 @@ function normalizeAnswerIndex(value) {
     if (/^[A-D]$/.test(trimmed)) return LETTERS.indexOf(trimmed);
   }
   return null;
+}
+
+const CONFIDENCE_LABELS = Object.freeze({
+  cao: 'cao',
+  vua: 'vừa',
+  thap: 'thấp'
+});
+
+function normalizeConfidence(value) {
+  if (typeof value !== 'string') return '';
+  const normalized = value.trim().toLowerCase();
+  if (['cao', 'high', 'chac chan', 'chắc chắn'].includes(normalized)) return 'cao';
+  if (['vua', 'vừa', 'medium', 'trung binh', 'trung bình', 'binh thuong', 'bình thường'].includes(normalized)) return 'vua';
+  if (['thap', 'thấp', 'low'].includes(normalized)) return 'thap';
+  return '';
+}
+
+function normalizeAiChosen(value, fallback = false) {
+  if (typeof value === 'boolean') return value;
+  if (value === 1 || value === '1') return true;
+  if (value === 0 || value === '0') return false;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['true', 'yes', 'co', 'có', 'dung', 'đúng'].includes(normalized)) return true;
+    if (['false', 'no', 'khong', 'không', 'sai'].includes(normalized)) return false;
+  }
+  return fallback;
+}
+
+function defaultConfidenceForType(type) {
+  const typeNumber = Number(type) || 1;
+  if (typeNumber === 2) return 'cao';
+  if (typeNumber === 3) return 'vua';
+  return '';
+}
+
+function resolveConfidence(value, type, aiChosen) {
+  const normalized = normalizeConfidence(value);
+  if (normalized) return normalized;
+  const byType = defaultConfidenceForType(type);
+  if (byType) return byType;
+  return aiChosen ? 'vua' : '';
 }
 
 function formatFileSize(bytes) {
@@ -541,6 +608,14 @@ function renderHome() {
           </div>
         </div>
 
+        <label class="type-option type-option--check auto-answer-option">
+          <input id="autoAnswerToggle" type="checkbox" ${state.allowAIAnswer ? 'checked' : ''} ${state.processing ? 'disabled' : ''}>
+          <span class="type-option__body">
+            <span class="type-option__title">Nếu ảnh chưa có đáp án, để AI tự chọn</span>
+            <span class="type-option__desc">Khi ảnh không có dấu hiệu đáp án, AI sẽ tự chọn đáp án đúng nhất theo kiến thức. Tắt để giữ trống và tự chọn ở màn hình kiểm tra.</span>
+          </span>
+        </label>
+
         <div class="upload-actions">
           <button class="btn btn--primary btn--large" type="button" data-action="start-extract" ${canStart ? '' : 'disabled'}>
             ${icon('sparkles')} ${state.processing ? 'Đang tách câu hỏi…' : 'Tách câu hỏi bằng AI'}
@@ -864,9 +939,15 @@ function waitWithCountdown(seconds, onTick) {
   });
 }
 
-async function extractQuestionsFromImage(dataUrl, type, config, onStatus) {
+function getPrompt(type, allowAIAnswer = true) {
+  const typeNumber = Number(type) || 1;
+  if (typeNumber === 1) return allowAIAnswer ? PROMPTS[1] : PROMPTS_1_NO_AI;
+  return PROMPTS[typeNumber] || PROMPTS[1];
+}
+
+async function extractQuestionsFromImage(dataUrl, type, config, onStatus, allowAIAnswer = true) {
   const models = parseModelList(config.models);
-  const prompt = PROMPTS[Number(type)] || PROMPTS[1];
+  const prompt = getPrompt(type, allowAIAnswer);
   const failures = [];
 
   for (const model of models) {
@@ -910,12 +991,13 @@ async function extractQuestionsFromImage(dataUrl, type, config, onStatus) {
   throw error;
 }
 
-function normalizeExtractedQuestions(parsed, type, imageIndex) {
+function normalizeExtractedQuestions(parsed, type, imageIndex, allowAIAnswer = true) {
   const rawQuestions = Array.isArray(parsed) ? parsed : parsed?.questions;
   if (!Array.isArray(rawQuestions)) {
     throw new Error('AI không trả về mảng "questions" đúng định dạng.');
   }
 
+  const typeNumber = Number(type) || 1;
   const result = [];
   rawQuestions.forEach((item) => {
     if (!item || typeof item !== 'object') return;
@@ -926,13 +1008,20 @@ function normalizeExtractedQuestions(parsed, type, imageIndex) {
 
     if (!questionText && options.every((option) => !option)) return;
 
+    const answer = normalizeAnswerIndex(item.a);
+    const aiChosen = typeNumber === 1
+      ? (allowAIAnswer ? normalizeAiChosen(item.ai_chon, Boolean(item.aiAnswers)) : false)
+      : true;
+
     result.push({
       id: uid('q'),
       q: questionText,
       o: options,
-      a: normalizeAnswerIndex(item.a),
+      a: answer,
       e: String(item.e ?? item.explanation ?? '').trim(),
-      aiAnswers: Number(type) !== 1,
+      aiAnswers: aiChosen,
+      ai_chon: aiChosen,
+      do_tin_cay: resolveConfidence(item.do_tin_cay, typeNumber, aiChosen),
       imageIndex
     });
   });
@@ -963,6 +1052,7 @@ async function startExtraction() {
 
   const files = state.selectedImages.map((item) => item.file);
   const type = Number(state.draftType) || 1;
+  const allowAIAnswer = type === 1 ? Boolean(state.allowAIAnswer) : true;
   const allQuestions = [];
   const errors = [];
 
@@ -994,8 +1084,8 @@ async function startExtraction() {
         setProcessing(`Ảnh ${imageNo}/${files.length}…`, `Đang gửi ảnh cho AI…`, basePercent + 6);
         const parsed = await extractQuestionsFromImage(dataUrl, type, config, (detail) => {
           setProcessing(`Ảnh ${imageNo}/${files.length}…`, detail, Math.min(96, basePercent + 6));
-        });
-        const questions = normalizeExtractedQuestions(parsed, type, imageNo);
+        }, allowAIAnswer);
+        const questions = normalizeExtractedQuestions(parsed, type, imageNo, allowAIAnswer);
         if (!questions.length) {
           errors.push({ file: file.name, message: 'AI không tìm thấy câu hỏi nào trong ảnh này.' });
         } else {
@@ -1023,7 +1113,8 @@ async function startExtraction() {
       questions: allQuestions,
       errors,
       type,
-      name: makeDefaultDeckName()
+      name: makeDefaultDeckName(),
+      filter: 'all'
     };
     state.session = null;
     state.result = null;
@@ -1048,12 +1139,22 @@ function getCheckAnalysis() {
     if (!Array.isArray(question.o) || question.o.length !== 4) return true;
     return question.o.some((option) => !String(option || '').trim());
   }).length;
+  const aiChosen = questions.filter((question) => question.ai_chon).length;
+  const lowConfidence = questions.filter((question) => question.do_tin_cay === 'thap').length;
   return {
     total: questions.length,
     unanswered,
     incomplete,
-    canSave: questions.length > 0 && unanswered === 0 && incomplete === 0
+    aiChosen,
+    lowConfidence,
+    canSave: questions.length > 0 && unanswered === 0
   };
+}
+
+function renderConfidenceTag(confidence) {
+  const label = CONFIDENCE_LABELS[confidence];
+  if (!label) return '';
+  return `<span class="tag tag--confidence tag--confidence--${confidence}" data-ai-badge>${icon('shield')} Độ tin cậy: ${label}</span>`;
 }
 
 function renderCheckButtons() {
@@ -1064,7 +1165,7 @@ function renderCheckButtons() {
   `;
 }
 
-function renderCheck() {
+function renderCheck({ scroll = true } = {}) {
   if (!state.check) {
     renderHome();
     return;
@@ -1074,13 +1175,25 @@ function renderCheck() {
   const check = state.check;
   const questions = check.questions;
   const typeInfo = getTypeInfo(check.type);
+  const analysis = getCheckAnalysis();
+  const filter = ['all', 'ai', 'low'].includes(check.filter) ? check.filter : 'all';
+  check.filter = filter;
+  const indexed = questions.map((question, index) => ({ question, index }));
+  const visible = filter === 'ai'
+    ? indexed.filter((item) => item.question.ai_chon)
+    : filter === 'low'
+      ? indexed.filter((item) => item.question.do_tin_cay === 'thap')
+      : indexed;
+  const filterEmptyText = filter === 'ai'
+    ? 'Không có câu nào do AI tự chọn đáp án.'
+    : 'Không có câu nào có độ tin cậy thấp.';
 
   app.innerHTML = `
     <button class="btn btn--ghost back-button" type="button" data-action="cancel-check">${icon('arrowLeft')} Quay lại</button>
     <div class="view-head">
       <div>
         <h1>Kiểm tra lại câu hỏi</h1>
-        <p>${questions.length ? `AI đã tách ${questions.length} câu từ ${new Set(questions.map((q) => q.imageIndex)).size} ảnh.` : 'Chưa có câu hỏi nào được tách thành công.'} Chỉnh sửa nội dung và chọn đáp án đúng trước khi lưu.</p>
+        <p>${questions.length ? `AI đã tách ${questions.length} câu từ ${new Set(questions.map((q) => q.imageIndex)).size} ảnh.` : 'Chưa có câu hỏi nào được tách thành công.'} Chỉnh sửa nội dung và chọn đáp án đúng trước khi lưu.${analysis.aiChosen ? ` Có ${analysis.aiChosen} câu do AI tự chọn đáp án.` : ''}</p>
       </div>
       <span class="tag">${icon('sparkles')} ${esc(typeInfo.short)}</span>
     </div>
@@ -1108,13 +1221,31 @@ function renderCheck() {
       ` : ''}
 
       ${questions.length ? `
-        <div class="check-list">
-          ${questions.map((question, index) => renderCheckQuestion(question, index)).join('')}
-        </div>
+        <section class="card check-filters" aria-label="Lọc câu hỏi">
+          <span class="check-filters__label">${icon('list')} Lọc câu hỏi</span>
+          <div class="check-filters__buttons">
+            <button class="btn btn--ghost btn--sm check-filter-btn ${filter === 'all' ? 'is-active' : ''}" type="button" data-action="check-filter" data-filter="all">Tất cả (${questions.length})</button>
+            <button class="btn btn--ghost btn--sm check-filter-btn ${filter === 'ai' ? 'is-active' : ''}" type="button" data-action="check-filter" data-filter="ai">Chỉ hiện câu AI chọn (${analysis.aiChosen})</button>
+            <button class="btn btn--ghost btn--sm check-filter-btn ${filter === 'low' ? 'is-active' : ''}" type="button" data-action="check-filter" data-filter="low">Chỉ hiện câu độ tin cậy thấp (${analysis.lowConfidence})</button>
+          </div>
+        </section>
+
+        ${visible.length ? `
+          <div class="check-list">
+            ${visible.map(({ question, index }) => renderCheckQuestion(question, index)).join('')}
+          </div>
+        ` : `
+          <div class="empty-state">
+            <span class="empty-state__icon">${icon('list')}</span>
+            <h3>Không có câu phù hợp bộ lọc</h3>
+            <p>${filterEmptyText}</p>
+          </div>
+        `}
+
         <section class="card check-toolbar" aria-label="Lưu bộ câu hỏi">
           <div>
             <strong>${questions.length} câu hỏi</strong><br>
-            <span class="muted">Kiểm tra kỹ nội dung do AI tách và các đáp án tự soạn.</span>
+            <span class="muted">Kiểm tra kỹ nội dung do AI tách, đáp án AI tự chọn và phần giải thích.</span>
           </div>
           <div class="check-toolbar__actions">
             ${renderCheckButtons()}
@@ -1131,7 +1262,7 @@ function renderCheck() {
   `;
 
   updateCheckStatus();
-  scrollToTop();
+  if (scroll) scrollToTop();
 }
 
 function renderCheckQuestion(question, index) {
@@ -1141,7 +1272,7 @@ function renderCheckQuestion(question, index) {
       <div class="check-card__head">
         <span class="tag">Câu ${index + 1}</span>
         <span class="tag tag--image">${icon('image')} Ảnh ${question.imageIndex || '?'}</span>
-        ${question.aiAnswers ? `<span class="tag tag--ai">${icon('sparkles')} AI soạn đáp án</span>` : ''}
+        ${question.ai_chon ? `<span class="tag tag--ai" data-ai-badge>${icon('sparkles')} AI chọn đáp án</span>${renderConfidenceTag(question.do_tin_cay)}` : ''}
         <span class="check-card__spacer"></span>
         <button class="btn btn--danger btn--sm check-card__delete" type="button" data-action="delete-check-q" data-qid="${esc(question.id)}">${icon('trash')} Xóa câu</button>
       </div>
@@ -1164,9 +1295,9 @@ function renderCheckQuestion(question, index) {
         </div>
       </div>
 
-      <div class="check-field">
-        <label for="explanation-${esc(question.id)}">Giải thích (không bắt buộc)</label>
-        <textarea id="explanation-${esc(question.id)}" data-field="e" aria-label="Giải thích cho câu ${index + 1}" placeholder="Giải thích ngắn…">${esc(question.e)}</textarea>
+      <div class="check-field check-field--explanation">
+        <label for="explanation-${esc(question.id)}">Giải thích của AI (1–2 câu, có thể sửa)</label>
+        <textarea class="check-explanation-input" id="explanation-${esc(question.id)}" data-field="e" aria-label="Giải thích cho câu ${index + 1}" placeholder="AI chưa có giải thích cho câu này…">${esc(question.e)}</textarea>
       </div>
     </article>
   `;
@@ -1190,16 +1321,12 @@ function updateCheckStatus() {
     message = 'Chưa có câu hỏi nào để lưu. Hãy quay lại và tải ảnh khác.';
   } else if (!analysis.canSave) {
     mode = 'warn';
-    const problems = [];
-    if (analysis.unanswered) {
-      problems.push(`${analysis.unanswered} câu chưa chọn đáp án đúng`);
-    }
-    if (analysis.incomplete) {
-      problems.push(`${analysis.incomplete} câu còn nội dung hoặc đáp án bị trống`);
-    }
-    message = `Chưa thể lưu: ${problems.join(' và ')}.`;
+    message = `Chưa thể lưu: còn ${analysis.unanswered} câu chưa có đáp án đúng.`;
   } else {
     message = `Đã sẵn sàng lưu ${analysis.total} câu hỏi.`;
+    if (analysis.incomplete) {
+      message += ` Lưu ý: ${analysis.incomplete} câu còn nội dung hoặc đáp án trống.`;
+    }
   }
 
   status.className = `check-status check-status--${mode}`;
@@ -1217,10 +1344,6 @@ function savePendingCheck() {
     toast(`Còn ${analysis.unanswered} câu chưa chọn đáp án đúng.`, 'error');
     return;
   }
-  if (analysis.incomplete) {
-    toast('Còn câu hỏi hoặc đáp án đang để trống. Hãy điền đủ trước khi lưu.', 'error');
-    return;
-  }
 
   const questions = state.check.questions.map((question) => ({
     id: uid('q'),
@@ -1228,7 +1351,9 @@ function savePendingCheck() {
     o: question.o.map((option) => String(option || '').trim()),
     a: question.a,
     e: String(question.e || '').trim(),
-    aiAnswers: Boolean(question.aiAnswers),
+    aiAnswers: Boolean(question.ai_chon),
+    ai_chon: Boolean(question.ai_chon),
+    do_tin_cay: normalizeConfidence(question.do_tin_cay),
     imageIndex: Number.isInteger(question.imageIndex) ? question.imageIndex : null
   }));
 
@@ -1282,6 +1407,7 @@ function getDecks() {
   raw.forEach((deck) => {
     if (!deck || typeof deck !== 'object' || !Array.isArray(deck.questions)) return;
 
+    const type = [1, 2, 3].includes(Number(deck.type)) ? Number(deck.type) : 1;
     const questions = [];
     deck.questions.forEach((question) => {
       if (!question || typeof question !== 'object') return;
@@ -1291,6 +1417,9 @@ function getDecks() {
       while (options.length < 4) options.push('');
       const answer = normalizeAnswerIndex(question.a);
       if (!text || !isValidAnswer(answer) || options.some((option) => !option)) return;
+      const aiChosen = type === 1
+        ? normalizeAiChosen(question.ai_chon, Boolean(question.aiAnswers))
+        : true;
 
       questions.push({
         id: typeof question.id === 'string' && question.id ? question.id : uid('q'),
@@ -1298,13 +1427,14 @@ function getDecks() {
         o: options,
         a: answer,
         e: String(question.e || '').trim(),
-        aiAnswers: Boolean(question.aiAnswers),
+        aiAnswers: aiChosen,
+        ai_chon: aiChosen,
+        do_tin_cay: resolveConfidence(question.do_tin_cay, type, aiChosen),
         imageIndex: Number.isInteger(question.imageIndex) ? question.imageIndex : null
       });
     });
 
     if (!questions.length) return;
-    const type = [1, 2, 3].includes(Number(deck.type)) ? Number(deck.type) : 1;
     decks.push({
       id: typeof deck.id === 'string' && deck.id ? deck.id : uid('deck'),
       name: String(deck.name || '').trim() || 'Bộ câu hỏi',
@@ -1362,6 +1492,8 @@ function exportDeck(deckId) {
       a: question.a,
       e: question.e,
       aiAnswers: question.aiAnswers,
+      ai_chon: question.ai_chon,
+      do_tin_cay: question.do_tin_cay,
       imageIndex: question.imageIndex
     }))
   };
@@ -1415,13 +1547,18 @@ function normalizeImportedDeck(data, fileName) {
     if (!isValidAnswer(answer)) {
       throw new Error(`Câu ${index + 1} chưa có đáp án đúng hợp lệ (0–3).`);
     }
+    const aiChosen = type === 1
+      ? normalizeAiChosen(item.ai_chon, Boolean(item.aiAnswers))
+      : true;
     return {
       id: uid('q'),
       q: text,
       o: options,
       a: answer,
       e: String(item.e ?? item.explanation ?? '').trim(),
-      aiAnswers: Boolean(item.aiAnswers) || type !== 1,
+      aiAnswers: aiChosen,
+      ai_chon: aiChosen,
+      do_tin_cay: resolveConfidence(item.do_tin_cay, type, aiChosen),
       imageIndex: Number.isInteger(item.imageIndex) ? item.imageIndex : null
     };
   });
@@ -1477,7 +1614,9 @@ function prepareSessionQuestion(question) {
     o: order.map((index) => options[index]),
     a: order.indexOf(correctIndex),
     e: String(question.e || '').trim(),
-    aiAnswers: Boolean(question.aiAnswers),
+    aiAnswers: Boolean(question.ai_chon),
+    ai_chon: Boolean(question.ai_chon),
+    do_tin_cay: normalizeConfidence(question.do_tin_cay),
     imageIndex: question.imageIndex
   };
 }
@@ -1590,7 +1729,7 @@ function renderPractice() {
       <section class="card quiz-question-card" aria-labelledby="practiceQuestion">
         <div class="quiz-progress-head">
           <span>Câu hỏi ${session.current + 1}</span>
-          ${question.aiAnswers ? `<span class="tag tag--ai">${icon('sparkles')} AI soạn đáp án</span>` : ''}
+          ${question.ai_chon ? `<span class="tag tag--ai tag--sm">${icon('sparkles')} Đáp án do AI chọn</span>` : ''}
         </div>
         <h2 class="quiz-question" id="practiceQuestion">${esc(question.q)}</h2>
 
@@ -1616,7 +1755,9 @@ function renderPractice() {
             <span class="explanation__icon">${icon(isCorrect ? 'check' : 'info')}</span>
             <div>
               <strong>${isCorrect ? 'Chính xác!' : `Chưa chính xác. Đáp án đúng là ${LETTERS[question.a]}.`}</strong>
-              <p>${esc(question.e || (isCorrect ? 'Bạn đã chọn đúng đáp án của câu này.' : 'Hãy xem lại đáp án được viền xanh ở trên.'))}</p>
+              <p>${question.e
+                ? `${question.ai_chon ? '<strong>Giải thích của AI:</strong> ' : ''}${esc(question.e)}`
+                : esc(isCorrect ? 'Bạn đã chọn đúng đáp án của câu này.' : 'Hãy xem lại đáp án được viền xanh ở trên.')}</p>
             </div>
           </div>
         ` : ''}
@@ -1744,12 +1885,12 @@ function renderResult() {
                   <article class="wrong-item">
                     <div class="check-card__head">
                       <span class="tag">Câu ${item.index + 1}</span>
-                      ${item.question.aiAnswers ? `<span class="tag tag--ai">${icon('sparkles')} AI soạn đáp án</span>` : ''}
+                      ${item.question.ai_chon ? `<span class="tag tag--ai tag--sm">${icon('sparkles')} Đáp án do AI chọn</span>` : ''}
                     </div>
                     <h3>${esc(item.question.q)}</h3>
                     <p class="is-chosen">Bạn chọn: <strong>${esc(chosenText)}</strong></p>
                     <p class="is-correct">Đáp án đúng: <strong>${esc(correctText)}</strong></p>
-                    ${item.question.e ? `<p class="wrong-explanation">${esc(item.question.e)}</p>` : ''}
+                    ${item.question.e ? `<p class="wrong-explanation"><strong>${item.question.ai_chon ? 'Giải thích của AI' : 'Giải thích'}:</strong> ${esc(item.question.e)}</p>` : ''}
                   </article>
                 `;
               }).join('')}
@@ -1816,7 +1957,7 @@ function renderExam() {
         <section class="card exam-main-card" aria-labelledby="examQuestion">
           <div class="quiz-progress-head">
             <span>Câu ${session.current + 1} / ${session.questions.length}</span>
-            ${question.aiAnswers ? `<span class="tag tag--ai">${icon('sparkles')} AI soạn đáp án</span>` : ''}
+            ${question.ai_chon ? `<span class="tag tag--ai tag--sm">${icon('sparkles')} Đáp án do AI chọn</span>` : ''}
           </div>
           <h2 class="quiz-question" id="examQuestion">${esc(question.q)}</h2>
 
@@ -2044,6 +2185,15 @@ function onAppClick(event) {
       cancelCheck();
       break;
 
+    case 'check-filter': {
+      if (!state.check) return;
+      const filter = actionElement.dataset.filter;
+      if (!['all', 'ai', 'low'].includes(filter)) return;
+      state.check.filter = filter;
+      renderCheck({ scroll: false });
+      break;
+    }
+
     case 'delete-check-q':
       deleteCheckQuestion(actionElement.dataset.qid);
       break;
@@ -2169,13 +2319,21 @@ function onAppChange(event) {
     return;
   }
 
+  if (target.id === 'autoAnswerToggle') {
+    state.allowAIAnswer = Boolean(target.checked);
+    return;
+  }
+
   if (target.classList.contains('correct-radio') && state.check) {
     const card = target.closest('.check-card');
     if (!card) return;
     const question = state.check.questions.find((item) => item.id === card.dataset.qid);
     if (!question) return;
     question.a = Number(target.value);
-    updateCheckStatus();
+    question.ai_chon = false;
+    question.aiAnswers = false;
+    question.do_tin_cay = '';
+    renderCheck({ scroll: false });
   }
 }
 
