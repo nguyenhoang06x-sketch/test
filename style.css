@@ -2432,6 +2432,62 @@ svg {
   color: var(--muted);
 }
 
+/* Đồng hồ thời gian luyện tập trong card tiến độ */
+.practice-timer {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border: 1px solid rgba(99, 102, 241, 0.28);
+  border-radius: 999px;
+  background: var(--primary-soft);
+  color: var(--primary-text);
+  font-size: 0.72rem;
+  font-weight: 750;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+.practice-timer .icon {
+  width: 13px;
+  height: 13px;
+}
+
+.practice-timer__time {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+.practice-timer__label {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 650;
+}
+
+.practice-timer--paused {
+  border-color: var(--border);
+  background: var(--surface-2);
+  color: var(--muted);
+}
+
+.practice-timer--paused .icon {
+  opacity: 0.7;
+}
+
+.practice-timer__toggle {
+  align-self: center;
+  min-height: 28px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  gap: 5px;
+}
+
+.practice-timer__toggle .icon {
+  width: 14px;
+  height: 14px;
+}
+
 .quiz-score__bar {
   display: flex;
   overflow: hidden;
@@ -2867,6 +2923,27 @@ svg {
 
 .result-stat--bad strong {
   color: var(--danger);
+}
+
+.result-duration {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin: 14px 0 0;
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.result-duration .icon {
+  width: 15px;
+  height: 15px;
+  color: var(--primary-text);
 }
 
 .result-actions {
@@ -3842,6 +3919,21 @@ svg {
 
   .quiz-score__chip {
     padding: 4px 8px;
+    font-size: 0.68rem;
+  }
+
+  .practice-timer {
+    max-width: 100%;
+    padding: 4px 8px;
+    font-size: 0.68rem;
+  }
+
+  .practice-timer__label {
+    display: none;
+  }
+
+  .practice-timer__toggle {
+    padding: 3px 9px;
     font-size: 0.68rem;
   }
 

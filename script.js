@@ -129,6 +129,7 @@ const aiSettingsPanel = document.getElementById('aiSettingsPanel');
 const aiBubbleDot = document.getElementById('aiBubbleDot');
 
 let examClock = null;
+let practiceClock = null;
 let checkDraftTimer = null;
 let draftQuotaWarned = false;
 let examDraftSaveFailed = false;
@@ -146,6 +147,7 @@ const ICONS = {
   calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/>',
   layers: '<path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 13 9 5 9-5M3 17l9 5 9-5"/>',
   play: '<path d="M8 5v14l11-7L8 5Z"/>',
+  pause: '<path d="M9 5v14M15 5v14"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   download: '<path d="M12 3v12m0 0 4.5-4.5M12 15l-4.5-4.5"/><path d="M5 20h14"/>',
   trash: '<path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/>',
@@ -1163,6 +1165,7 @@ function getTypeInfo(type) {
 function renderHome() {
   captureSettingsForm();
   clearExamClock();
+  clearPracticeClock();
   state.view = 'home';
   state.setup = null;
 
@@ -1322,6 +1325,7 @@ function renderProcessing() {
 function renderDeckCard(deck, historyEntries = []) {
   const typeInfo = getTypeInfo(deck.type);
   const historySummary = summarizeDeckHistory(historyEntries);
+  const totalDuration = formatShortDuration(historySummary ? historySummary.totalDurationSeconds : 0);
   const weakCount = getWeakQuestionIdsFromHistory(historyEntries).length;
   const dsQuestions = deck.questions.filter(isDungSaiQuestion);
   const dsItemCount = dsQuestions.reduce((sum, question) => sum + getQuestionItems(question).length, 0);
@@ -1343,6 +1347,7 @@ function renderDeckCard(deck, historyEntries = []) {
         <div class="deck-card__history">
           <span>${icon('award')} Cao nhất <strong>${esc(formatScore(historySummary.best.score))}/10</strong></span>
           <span>${icon('clock')} Gần nhất <strong>${esc(formatScore(historySummary.last.score))}/10</strong> · ${esc(formatDate(historySummary.last.date))}</span>
+          ${totalDuration ? `<span>${icon('clock')} Đã luyện <strong>${esc(totalDuration)}</strong></span>` : ''}
         </div>
       ` : ''}
       <div class="deck-card__actions">
@@ -3262,6 +3267,7 @@ function getHistory() {
     const deckId = typeof entry.deckId === 'string' ? entry.deckId : '';
     if (!deckId) return;
     const score = Number(entry.score);
+    const durationSeconds = Number(entry.durationSeconds);
     entries.push({
       id: typeof entry.id === 'string' && entry.id ? entry.id : '',
       deckId,
@@ -3270,6 +3276,10 @@ function getHistory() {
       score: Number.isFinite(score) ? score : 0,
       total: Number(entry.total) || 0,
       correctCount: Number(entry.correctCount) || 0,
+      // Entry cũ không có durationSeconds → mặc định 0, không làm hỏng lịch sử.
+      durationSeconds: Number.isFinite(durationSeconds) && durationSeconds > 0
+        ? Math.round(durationSeconds)
+        : 0,
       wrongIds: Array.isArray(entry.wrongIds)
         ? entry.wrongIds.filter((id) => typeof id === 'string' && id)
         : []
@@ -3295,10 +3305,12 @@ function summarizeDeckHistory(entries) {
     attempts: entries.length,
     best: entries[0],
     last: entries[0],
-    lastTime: getHistoryTime(entries[0])
+    lastTime: getHistoryTime(entries[0]),
+    totalDurationSeconds: 0
   };
   entries.forEach((entry) => {
     if (entry.score > summary.best.score) summary.best = entry;
+    summary.totalDurationSeconds += Number(entry.durationSeconds) || 0;
     const time = getHistoryTime(entry);
     if (time > summary.lastTime) {
       summary.last = entry;
@@ -3345,6 +3357,7 @@ function saveSessionHistory(result) {
     score: Number(result.score) || 0,
     total: Number(result.total) || 0,
     correctCount: Number(result.correctCount) || 0,
+    durationSeconds: Math.max(0, Math.round(Number(result.durationSeconds) || 0)),
     wrongIds
   };
   const history = getHistory();
@@ -3959,6 +3972,152 @@ function clearExamClock() {
   }
 }
 
+/* ---------- Đồng hồ đếm thời gian luyện tập (chế độ practice/dsdrill) ---------- */
+function clearPracticeClock() {
+  if (practiceClock) {
+    window.clearInterval(practiceClock);
+    practiceClock = null;
+  }
+}
+
+function isPracticeMode(session) {
+  return Boolean(session) && (session.mode === 'practice' || session.mode === 'dsdrill');
+}
+
+// Thời gian hiện tại = elapsedMs + (runningSince ? Date.now() - runningSince : 0)
+function getPracticeElapsedMs(session) {
+  if (!session) return 0;
+  const elapsed = Number(session.elapsedMs);
+  const base = Number.isFinite(elapsed) && elapsed > 0 ? elapsed : 0;
+  const since = Number(session.runningSince);
+  const running = Number.isFinite(since) && since > 0 ? Date.now() - since : 0;
+  return base + Math.max(0, running);
+}
+
+// mm:ss, quá 1 giờ thì h:mm:ss
+function formatPracticeClock(ms) {
+  const total = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  if (hours > 0) return `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  return `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+// "12 phút 05 giây" – dùng cho aria-label và dòng thời gian ở màn kết quả
+function describePracticeDuration(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  if (hours > 0) return `${hours} giờ ${String(minutes).padStart(2, '0')} phút ${String(secs).padStart(2, '0')} giây`;
+  if (minutes > 0) return `${minutes} phút ${String(secs).padStart(2, '0')} giây`;
+  return `${secs} giây`;
+}
+
+// "1 giờ 25 phút", "12 phút", "dưới 1 phút" – dùng cho dòng tóm tắt của deck-card
+function formatShortDuration(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0));
+  if (total <= 0) return '';
+  if (total < 60) return 'dưới 1 phút';
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  if (!hours) return `${minutes} phút`;
+  return minutes ? `${hours} giờ ${minutes} phút` : `${hours} giờ`;
+}
+
+// Chỉ cập nhật textContent/aria-label của chip, không dựng lại màn hình.
+function updatePracticeTimer() {
+  const session = state.session;
+  if (!isPracticeMode(session)) return false;
+  const timer = document.getElementById('practiceTimer');
+  if (!timer) return false;
+  const ms = getPracticeElapsedMs(session);
+  const timeElement = timer.querySelector('[data-time]');
+  if (timeElement) timeElement.textContent = formatPracticeClock(ms);
+  timer.setAttribute('aria-label', `Đã luyện tập ${describePracticeDuration(ms / 1000)}`);
+  const paused = !(Number(session.runningSince) > 0);
+  timer.classList.toggle('practice-timer--paused', paused);
+  let chipLabel = timer.querySelector('[data-chip-label]');
+  if (paused && !chipLabel) {
+    chipLabel = document.createElement('span');
+    chipLabel.className = 'practice-timer__label';
+    chipLabel.setAttribute('data-chip-label', '');
+    chipLabel.textContent = 'Tạm dừng';
+    timer.appendChild(chipLabel);
+  } else if (!paused && chipLabel) {
+    chipLabel.remove();
+  }
+  const toggle = document.querySelector('[data-action="practice-timer-toggle"]');
+  if (toggle) {
+    toggle.setAttribute('aria-pressed', String(paused));
+    toggle.setAttribute('aria-label', paused ? 'Tiếp tục tính thời gian luyện tập' : 'Tạm dừng tính thời gian luyện tập');
+    const label = toggle.querySelector('[data-label]');
+    const iconHost = toggle.querySelector('[data-icon]');
+    if (iconHost) iconHost.innerHTML = icon(paused ? 'play' : 'pause');
+    if (label) label.textContent = paused ? 'Tiếp tục' : 'Tạm dừng';
+  }
+  return true;
+}
+
+function startPracticeClock() {
+  clearPracticeClock();
+  practiceClock = window.setInterval(() => {
+    const session = state.session;
+    const timer = document.getElementById('practiceTimer');
+    if (!timer || !isPracticeMode(session) || !(Number(session.runningSince) > 0)) {
+      clearPracticeClock();
+      return;
+    }
+    updatePracticeTimer();
+  }, 1000);
+}
+
+// Gọi ở cuối renderPractice và sau mỗi lần đổi trạng thái tạm dừng.
+function syncPracticeClock() {
+  const session = state.session;
+  if (!isPracticeMode(session)) {
+    clearPracticeClock();
+    return;
+  }
+  updatePracticeTimer();
+  if (!(Number(session.runningSince) > 0)) {
+    clearPracticeClock();
+    return;
+  }
+  if (!practiceClock) startPracticeClock();
+}
+
+function setPracticePaused(paused, byUser = false) {
+  const session = state.session;
+  if (!isPracticeMode(session)) return;
+  const running = Number(session.runningSince) > 0;
+  if (paused && running) {
+    session.elapsedMs = getPracticeElapsedMs(session);
+    session.runningSince = null;
+  } else if (!paused && !running) {
+    session.runningSince = Date.now();
+  }
+  if (byUser) session.pausedByUser = paused;
+  syncPracticeClock();
+}
+
+function togglePracticePause() {
+  const session = state.session;
+  if (!isPracticeMode(session)) return;
+  setPracticePaused(Number(session.runningSince) > 0, true);
+}
+
+// Chốt thời gian khi kết thúc phiên (cộng dồn phần đang chạy vào elapsedMs).
+function finalizePracticeTime(session) {
+  if (!isPracticeMode(session)) return 0;
+  const ms = getPracticeElapsedMs(session);
+  session.elapsedMs = ms;
+  session.runningSince = null;
+  clearPracticeClock();
+  return Math.round(ms / 1000);
+}
+
 function selectSessionQuestions(pool, options = {}) {
   const total = pool.length;
   const requested = Number(options.count);
@@ -3981,6 +4140,7 @@ function startPractice(deck, sourceQuestions = null, options = {}) {
   }
 
   clearExamClock();
+  clearPracticeClock();
   const questions = selectSessionQuestions(pool, options)
     .map((question) => prepareSessionQuestion(question, options.shuffleAnswers !== false));
   state.result = null;
@@ -3990,7 +4150,10 @@ function startPractice(deck, sourceQuestions = null, options = {}) {
     questions,
     answers: questions.map(createEmptySessionAnswer),
     revealed: questions.map(() => false),
-    current: 0
+    current: 0,
+    elapsedMs: 0,
+    runningSince: Date.now(),
+    pausedByUser: false
   };
   renderPractice();
   scrollToTop();
@@ -4008,6 +4171,7 @@ function startExam(deck, options = {}) {
   clearExamDraft();
 
   clearExamClock();
+  clearPracticeClock();
   const questions = selectSessionQuestions(deck.questions, options)
     .map((question) => prepareSessionQuestion(question, options.shuffleAnswers !== false));
   const typedDuration = Number(options.durationMinutes);
@@ -4043,6 +4207,7 @@ function startDungSaiDrill(deck) {
   }
 
   clearExamClock();
+  clearPracticeClock();
   const roundSize = Math.min(10, dsPool.length);
   const shuffled = shuffle(dsPool);
   const round = shuffled.slice(0, roundSize);
@@ -4055,6 +4220,9 @@ function startDungSaiDrill(deck) {
     answers: questions.map(createEmptySessionAnswer),
     revealed: questions.map(() => false),
     current: 0,
+    elapsedMs: 0,
+    runningSince: Date.now(),
+    pausedByUser: false,
     drillSourceQuestions: dsPool,
     drillRoundSize: roundSize,
     drillRoundNumber: 1
@@ -4086,6 +4254,10 @@ function startNewDungSaiRound() {
   session.revealed = questions.map(() => false);
   session.current = 0;
   session.drillRoundNumber = (Number(session.drillRoundNumber) || 1) + 1;
+  session.elapsedMs = 0;
+  session.runningSince = Date.now();
+  session.pausedByUser = false;
+  clearPracticeClock();
   renderPractice();
   scrollToTop();
   toast(`Đã xáo lượt mới: ${questions.length} câu Đúng/Sai.`, 'success', 3000);
@@ -4199,6 +4371,8 @@ function renderPractice() {
   const dsSelectedCount = questionIsDs ? countAnsweredSessionItems(question, selected) : 0;
   const dsItemCount = questionIsDs ? getQuestionItems(question).length : 0;
   const dsGrade = questionIsDs && revealed ? gradeSessionQuestion(question, selected) : null;
+  const timerPaused = !(Number(session.runningSince) > 0);
+  const timerMs = getPracticeElapsedMs(session);
 
   app.innerHTML = `
     <div class="quiz-wrap">
@@ -4233,6 +4407,16 @@ function renderPractice() {
             <span class="quiz-score__chip quiz-score__chip--bad">${icon('x')} Sai: ${wrongCount} câu</span>
             <span class="quiz-score__chip quiz-score__chip--left">Còn lại: ${remainingCount} câu</span>
             ${dsItemsTotal ? `<span class="quiz-score__chip quiz-score__chip--left">${dsItemsAnswered}/${dsItemsTotal} ý đã trả lời</span>` : ''}
+            <span class="practice-timer ${timerPaused ? 'practice-timer--paused' : ''}" id="practiceTimer" role="timer" aria-live="off" title="Thời gian đã luyện tập" aria-label="Đã luyện tập ${esc(describePracticeDuration(timerMs / 1000))}">
+              ${icon('clock')}
+              <span class="practice-timer__time" data-time>${esc(formatPracticeClock(timerMs))}</span>
+              ${timerPaused ? '<span class="practice-timer__label" data-chip-label>Tạm dừng</span>' : ''}
+            </span>
+            <button class="btn btn--ghost btn--sm practice-timer__toggle" type="button" data-action="practice-timer-toggle"
+              aria-pressed="${timerPaused}" aria-label="${timerPaused ? 'Tiếp tục tính thời gian luyện tập' : 'Tạm dừng tính thời gian luyện tập'}">
+              <span data-icon>${icon(timerPaused ? 'play' : 'pause')}</span>
+              <span data-label>${timerPaused ? 'Tiếp tục' : 'Tạm dừng'}</span>
+            </button>
           </div>
           <div class="quiz-score__bar" role="img" aria-label="Đúng ${correctCount}, sai ${wrongCount}, còn ${remainingCount} câu">
             <span class="quiz-score__seg quiz-score__seg--good" style="width:${correctPercent}%"></span>
@@ -4328,6 +4512,8 @@ function renderPractice() {
       </section>
     </div>
   `;
+
+  syncPracticeClock();
 }
 
 function choosePracticeAnswer(index) {
@@ -4461,10 +4647,13 @@ function finishSession() {
   const session = state.session;
   if (!session) return;
   clearExamClock();
+  const durationSeconds = finalizePracticeTime(session);
   const result = buildResult(session, false);
+  if (isPracticeMode(session)) result.durationSeconds = durationSeconds;
   saveSessionHistory(result);
   state.result = result;
   state.session = null;
+  clearPracticeClock();
   renderResult();
   scrollToTop();
 }
@@ -4594,9 +4783,14 @@ function renderResult() {
   }
   state.view = 'result';
   clearExamClock();
+  clearPracticeClock();
 
   const isExam = result.mode === 'exam';
   const isDrill = result.mode === 'dsdrill';
+  const durationSeconds = Math.max(0, Math.round(Number(result.durationSeconds) || 0));
+  const durationLine = !isExam && durationSeconds > 0
+    ? `Thời gian luyện: ${describePracticeDuration(durationSeconds)}`
+    : '';
   const title = isExam
     ? (result.autoSubmitted ? 'Hết giờ – đã nộp bài' : 'Kết quả thi thử')
     : isDrill
@@ -4645,6 +4839,8 @@ function renderResult() {
               <span>Câu cần xem lại</span>
             </div>
           </div>
+
+          ${durationLine ? `<p class="result-duration">${icon('clock')} <span>${esc(durationLine)}</span></p>` : ''}
 
           ${(hasMcq || hasDs) ? `
             <div class="result-breakdown" aria-label="Điểm theo từng phần">
@@ -4738,6 +4934,7 @@ function renderExam() {
   }
 
   state.view = 'exam';
+  clearPracticeClock();
   const question = session.questions[session.current];
   const selected = session.answers[session.current];
   const questionIsDs = isDungSaiQuestion(question);
@@ -4940,6 +5137,7 @@ function goHome(force = false) {
   }
 
   clearExamClock();
+  clearPracticeClock();
   if (state.session?.mode === 'exam') clearExamDraft();
   if (state.check?.mode === 'create') clearCheckDraft();
   cleanupCheckAddImages();
@@ -4953,6 +5151,7 @@ function goHome(force = false) {
 function retryResult() {
   const result = state.result;
   if (!result || !result.deck) return;
+  clearPracticeClock();
   if (result.mode === 'dsdrill') {
     startDungSaiDrill(result.deck);
     return;
@@ -4963,6 +5162,7 @@ function retryResult() {
 function retryWrongQuestions() {
   const result = state.result;
   if (!result || !result.deck) return;
+  clearPracticeClock();
   const wrongIds = new Set(result.wrong.map((item) => item.question.sourceId));
   const pool = result.deck.questions.filter((question) => wrongIds.has(question.id));
   if (!pool.length) {
@@ -5254,6 +5454,10 @@ function onAppClick(event) {
 
     case 'practice-next':
       goNextPractice();
+      break;
+
+    case 'practice-timer-toggle':
+      togglePracticePause();
       break;
 
     case 'quit-session':
@@ -5621,16 +5825,31 @@ function bindEvents() {
 
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
+      // Tự dừng đồng hồ luyện tập khi rời tab: cộng dồn giờ đang chạy.
+      setPracticePaused(true, false);
       saveCheckDraft({ immediate: true });
       saveExamDraft();
       return;
+    }
+    // Tab hiện lại: chạy tiếp nếu người dùng không chủ động tạm dừng.
+    if (isPracticeMode(state.session) && !state.session.pausedByUser) {
+      setPracticePaused(false, false);
     }
     checkExamDeadline();
   });
 
   window.addEventListener('pagehide', () => {
+    setPracticePaused(true, false);
     saveCheckDraft({ immediate: true });
     saveExamDraft();
+  });
+
+  // Khôi phục từ bfcache: chạy tiếp nếu người dùng không chủ động tạm dừng.
+  window.addEventListener('pageshow', (event) => {
+    if (!event.persisted) return;
+    if (isPracticeMode(state.session) && !state.session.pausedByUser && !document.hidden) {
+      setPracticePaused(false, false);
+    }
   });
 
   window.addEventListener('beforeunload', (event) => {
