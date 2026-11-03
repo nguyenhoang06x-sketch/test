@@ -22,7 +22,7 @@ const DEFAULT_CONFIG = Object.freeze({
 });
 
 const LETTERS = ['A', 'B', 'C', 'D'];
-const CHECK_FILTERS = ['all', 'ai', 'low', 'missing'];
+const CHECK_FILTERS = ['all', 'ai', 'low', 'missing', 'new'];
 const MAX_IMAGE_SIDE = 1600;
 const JPEG_QUALITY = 0.85;
 const REQUEST_TIMEOUT_MS = 120000;
@@ -1478,12 +1478,27 @@ function handleImageSelection(fileList) {
 }
 
 function onPaste(event) {
-  if (state.view !== 'home' || state.setup || isAISettingsOpen()) return;
+  if (state.setup || isAISettingsOpen()) return;
+  const isCheckEdit = state.view === 'check' && state.check?.mode === 'edit';
+  if (!isCheckEdit && state.view !== 'home') return;
   const target = event.target;
   if (target && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))) return;
 
   const files = getClipboardImageFiles(event.clipboardData);
   if (!files.length) return;
+
+  if (isCheckEdit) {
+    if (state.processing) {
+      toast('Đang xử lý ảnh, vui lòng chờ hoàn tất.', 'warning');
+      return;
+    }
+    event.preventDefault();
+    if (handleCheckImageSelection(files)) {
+      toast(`Đã dán ${files.length} ảnh vào danh sách chờ tách.`, 'success', 3500);
+    }
+    return;
+  }
+
   event.preventDefault();
   const wasProcessing = state.processing;
   handleImageSelection(files);
@@ -1524,6 +1539,76 @@ function removeSelectedImage(index) {
   state.selectedImages.splice(index, 1);
   reindexSelectedImages();
   renderHome();
+}
+
+/* Ảnh chờ tách riêng cho màn sửa bộ, không dùng chung state.selectedImages. */
+function cleanupCheckAddImages() {
+  const check = state.check;
+  if (!check || !Array.isArray(check.addImages)) return;
+  check.addImages.forEach((item) => {
+    try {
+      URL.revokeObjectURL(item.url);
+    } catch (error) {
+      console.warn('Không giải phóng được URL ảnh chờ tách', error);
+    }
+  });
+  check.addImages = [];
+}
+
+function releaseCheckAddImageUrls(urls) {
+  const check = state.check;
+  if (!check || !Array.isArray(check.addImages) || !urls || !urls.size) return;
+  check.addImages = check.addImages.filter((item) => {
+    if (!urls.has(item.url)) return true;
+    try {
+      URL.revokeObjectURL(item.url);
+    } catch (error) {
+      console.warn('Không giải phóng được URL ảnh đã tách', error);
+    }
+    return false;
+  });
+}
+
+function handleCheckImageSelection(fileList) {
+  const check = state.check;
+  if (!check || check.mode !== 'edit') return false;
+  if (state.processing) {
+    toast('Đang xử lý ảnh, vui lòng chờ hoàn tất.', 'warning');
+    return false;
+  }
+  const incoming = Array.from(fileList || []);
+  const images = incoming.filter(isImageFile);
+  if (!images.length) {
+    toast('Không tìm thấy ảnh hợp lệ trong lựa chọn.', 'error');
+    return false;
+  }
+  if (images.length < incoming.length) {
+    toast(`Đã bỏ qua ${incoming.length - images.length} tệp không phải ảnh.`, 'warning');
+  }
+
+  if (!Array.isArray(check.addImages)) check.addImages = [];
+  images.forEach((file) => {
+    check.addImages.push({
+      file,
+      url: URL.createObjectURL(file),
+      error: ''
+    });
+  });
+  renderCheck({ scroll: false });
+  return true;
+}
+
+function removeCheckAddImage(index) {
+  if (state.processing || !state.check) return;
+  const item = state.check.addImages && state.check.addImages[index];
+  if (!item) return;
+  try {
+    URL.revokeObjectURL(item.url);
+  } catch (error) {
+    console.warn('Không giải phóng được URL ảnh chờ tách', error);
+  }
+  state.check.addImages.splice(index, 1);
+  renderCheck({ scroll: false });
 }
 
 function readFileAsDataURL(file) {
@@ -2079,6 +2164,112 @@ async function retryFailedImages() {
   }
 }
 
+async function addQuestionsFromImages() {
+  if (state.processing || !state.check || state.check.mode !== 'edit') return;
+  const check = state.check;
+  const entries = Array.isArray(check.addImages) ? check.addImages.slice() : [];
+  if (!entries.length) {
+    toast('Hãy chọn ít nhất một ảnh trước khi tách.', 'warning');
+    return;
+  }
+
+  const config = persistSettingsFromForm(false);
+  if (!config) return;
+  if (!config.apiKey.trim()) {
+    toast('Bạn cần nhập API key trong mục Cài đặt AI trước khi tách câu hỏi.', 'warning', 6000);
+    openAISettings('apiKey');
+    return;
+  }
+
+  // Ảnh mới đánh số tiếp nối để nhãn "Ảnh N" không trùng với ảnh cũ trong bộ.
+  const maxImageIndex = check.questions.reduce((max, question) => (
+    Number.isInteger(question.imageIndex) && question.imageIndex > max ? question.imageIndex : max
+  ), 0);
+  const numberedEntries = entries.map((item, index) => ({
+    ...item,
+    imageIndex: maxImageIndex + index + 1
+  }));
+  entries.forEach((item) => {
+    item.error = '';
+  });
+
+  const allowAIAnswer = check.addAllowAI !== false;
+  const controller = new AbortController();
+  state.extractionAbort = controller;
+  state.processing = true;
+  state.progress = {
+    text: `Ảnh mới 1/${entries.length}…`,
+    detail: 'Đang chuẩn bị tách câu hỏi…',
+    percent: 0
+  };
+  renderCheck({ scroll: false });
+
+  let result = { allQuestions: [], errors: [], successfulUrls: new Set(), aborted: false };
+  let fallbackError = '';
+  try {
+    result = await processImageEntries(numberedEntries, {
+      allowAIAnswer,
+      config,
+      signal: controller.signal,
+      label: 'Ảnh mới'
+    });
+  } catch (error) {
+    if (isAbortError(error)) {
+      result.aborted = true;
+    } else {
+      fallbackError = describeImageError(error);
+      result.errors.push({ file: '—', message: fallbackError });
+    }
+  } finally {
+    state.processing = false;
+    state.extractionAbort = null;
+
+    // Chỉ ảnh tách thành công mới biến mất; ảnh lỗi giữ lại kèm thông báo trong card.
+    releaseCheckAddImageUrls(result.successfulUrls);
+
+    const errorByUrl = new Map();
+    result.errors.forEach((error) => {
+      if (!error || !error.url) return;
+      const messages = errorByUrl.get(error.url) || [];
+      messages.push(error.message);
+      errorByUrl.set(error.url, messages);
+    });
+    check.addImages.forEach((item) => {
+      const messages = errorByUrl.get(item.url);
+      item.error = messages && messages.length ? messages.join(' · ') : fallbackError;
+    });
+
+    const addedQuestions = result.allQuestions.map((question) => ({ ...question, isNew: true }));
+    check.questions.push(...addedQuestions);
+    const duplicateIds = getDuplicateQuestionIds(check.questions);
+    const newDuplicateCount = addedQuestions.filter((question) => duplicateIds.has(question.id)).length;
+    check.filter = 'all';
+    renderCheck({ scroll: false });
+    if (addedQuestions.length) scrollToFirstNewQuestion(addedQuestions[0].id);
+    saveCheckDraft();
+
+    if (result.aborted) {
+      let message = addedQuestions.length
+        ? `Đã hủy tách ảnh. Giữ lại ${addedQuestions.length} câu mới đã đọc được.`
+        : 'Đã hủy tách ảnh. Chưa có câu mới nào được thêm.';
+      if (newDuplicateCount) message += ` Có ${newDuplicateCount} câu mới có thể trùng với câu cũ.`;
+      toast(message, 'warning', 6500);
+      return;
+    }
+
+    if (addedQuestions.length) {
+      let message = `Đã thêm ${addedQuestions.length} câu từ ảnh. Hãy kiểm tra trước khi lưu.`;
+      if (newDuplicateCount) message += ` Có ${newDuplicateCount} câu mới có thể trùng với câu cũ.`;
+      if (check.addImages.length) message += ` Còn ${check.addImages.length} ảnh lỗi, có thể tách lại.`;
+      toast(message, 'success', 7500);
+    } else if (check.addImages.length) {
+      toast('Chưa đọc được câu hỏi nào. Ảnh lỗi được giữ lại để thử tách lại.', 'error', 7000);
+    } else {
+      toast('Không tách được câu hỏi nào từ các ảnh đã chọn.', 'error', 7000);
+    }
+  }
+}
+
 /* =========================================================
    7. Màn hình kiểm tra câu hỏi sau khi AI tách
    ========================================================= */
@@ -2113,13 +2304,17 @@ function getDuplicateQuestionIds(questions) {
   const duplicates = new Set();
   groups.forEach((group) => {
     if (group.length < 2) return;
-    const imageIndices = new Set();
+    const imageKeys = new Set();
     group.forEach((question) => {
       if (Number.isInteger(question.imageIndex) && question.imageIndex > 0) {
-        imageIndices.add(question.imageIndex);
+        imageKeys.add(`image:${question.imageIndex}`);
+      } else {
+        // Câu nhập tay không có imageIndex vẫn được coi là một nguồn riêng
+        // để câu mới tách từ ảnh trùng với câu cũ vẫn bị đánh dấu.
+        imageKeys.add('manual');
       }
     });
-    if (imageIndices.size < 2) return;
+    if (imageKeys.size < 2) return;
     group.forEach((question) => duplicates.add(question.id));
   });
   return duplicates;
@@ -2202,6 +2397,7 @@ function openDeckEditor(deckId) {
   clearExamClock();
   state.session = null;
   state.result = null;
+  cleanupCheckAddImages();
   state.check = {
     mode: 'edit',
     deckId: deck.id,
@@ -2218,7 +2414,9 @@ function openDeckEditor(deckId) {
           o: Array.isArray(question.o) ? [...question.o] : ['', '', '', '']
         })),
     errors: [],
-    filter: 'all'
+    filter: 'all',
+    addImages: [],
+    addAllowAI: true
   };
   state.check.original = getCheckSignature(state.check);
   renderCheck();
@@ -2240,6 +2438,72 @@ function renderCheckButtons() {
   `;
 }
 
+function renderCheckAddImages(check) {
+  const items = Array.isArray(check.addImages) ? check.addImages : [];
+  const canExtract = items.length > 0 && !state.processing;
+  const disabled = state.processing ? 'disabled' : '';
+  return `
+    <section class="card check-add-images" aria-labelledby="checkAddImagesTitle">
+      <div class="check-add-images__head">
+        <div>
+          <h2 id="checkAddImagesTitle">${icon('image')} Thêm câu hỏi bằng ảnh</h2>
+          <p>Chọn ảnh đề cương mới để AI tách và thêm trực tiếp vào bộ đang sửa.</p>
+        </div>
+        <span class="tag">${icon('sparkles')} Không cần nhập tay</span>
+      </div>
+
+      <input class="file-input" id="checkAddImageInput" type="file" accept="image/*" multiple ${disabled}>
+      <label class="upload-zone upload-zone--compact" id="checkAddZone" for="checkAddImageInput">
+        <span class="upload-zone__icon">${icon('upload')}</span>
+        <strong>Chọn ảnh</strong>
+        <span>hoặc kéo thả ảnh vào đây · dán bằng Ctrl+V</span>
+        <small>Có thể chọn nhiều ảnh; ảnh lỗi sẽ được giữ lại để tách lại.</small>
+      </label>
+
+      ${items.length ? `
+        <div class="preview-area preview-area--compact">
+          <div class="preview-area__head">
+            <span>${items.length} ảnh chờ tách · ảnh lỗi được giữ lại</span>
+            <div class="preview-area__actions">
+              <button class="btn btn--ghost btn--sm" type="button" data-action="clear-check-images" ${disabled}>${icon('trash')} Bỏ tất cả</button>
+            </div>
+          </div>
+          <div class="preview-grid preview-grid--compact">
+            ${items.map((item, index) => `
+              <article class="preview-item preview-item--compact${item.error ? ' preview-item--error' : ''}">
+                <span class="preview-item__order">Ảnh ${index + 1}</span>
+                <img src="${esc(item.url)}" alt="Xem trước ${esc(item.file.name)}" loading="lazy">
+                <button class="preview-remove" type="button" data-action="remove-check-image" data-index="${index}" aria-label="Bỏ ảnh ${esc(item.file.name)}" title="Bỏ ảnh" ${disabled}>${icon('x')}</button>
+                <div class="preview-item__meta">
+                  <span class="preview-item__name" title="${esc(item.file.name)}">${esc(item.file.name)}</span>
+                  <span class="preview-item__size">${formatFileSize(item.file.size)}</span>
+                </div>
+                ${item.error ? `
+                  <p class="check-add-images__error" title="${esc(item.error)}">${icon('warning')}<span>${esc(item.error)}</span></p>
+                ` : ''}
+              </article>
+            `).join('')}
+          </div>
+        </div>
+      ` : `<p class="check-add-images__hint muted">${icon('image')} Chưa chọn ảnh nào. Bạn có thể chọn nhiều ảnh cùng lúc.</p>`}
+
+      <label class="type-option type-option--check auto-answer-option">
+        <input id="checkAddAllowAI" type="checkbox" ${check.addAllowAI !== false ? 'checked' : ''} ${disabled}>
+        <span class="type-option__body">
+          <span class="type-option__title">Nếu ảnh chưa có đáp án, để AI tự chọn</span>
+          <span class="type-option__desc">Khi ảnh không có dấu hiệu đáp án, AI sẽ tự chọn đáp án đúng nhất. Tắt để giữ trống và tự chọn ở màn hình này.</span>
+        </span>
+      </label>
+
+      <div class="check-add-images__actions">
+        <button class="btn btn--primary" type="button" data-action="add-questions-from-images" ${canExtract ? '' : 'disabled'}>
+          ${icon('sparkles')} ${state.processing ? 'Đang tách câu hỏi…' : 'Tách và thêm vào bộ này'}
+        </button>
+      </div>
+    </section>
+  `;
+}
+
 function renderCheck({ scroll = true } = {}) {
   if (!state.check) {
     renderHome();
@@ -2252,7 +2516,9 @@ function renderCheck({ scroll = true } = {}) {
   const questions = check.questions;
   const typeInfo = getTypeInfo(check.type);
   const analysis = getCheckAnalysis();
-  const filter = CHECK_FILTERS.includes(check.filter) ? check.filter : 'all';
+  const newCount = questions.filter((question) => question.isNew).length;
+  const requestedFilter = CHECK_FILTERS.includes(check.filter) ? check.filter : 'all';
+  const filter = requestedFilter === 'new' && !newCount ? 'all' : requestedFilter;
   check.filter = filter;
   const indexed = questions.map((question, index) => ({ question, index }));
   const visible = filter === 'ai'
@@ -2261,14 +2527,18 @@ function renderCheck({ scroll = true } = {}) {
       ? indexed.filter((item) => questionHasLowConfidence(item.question))
       : filter === 'missing'
         ? indexed.filter((item) => isQuestionMissingAnswer(item.question))
-        : indexed;
+        : filter === 'new'
+          ? indexed.filter((item) => Boolean(item.question.isNew))
+          : indexed;
   const filterEmptyText = filter === 'ai'
     ? 'Không có câu nào do AI tự chọn đáp án.'
     : filter === 'low'
       ? 'Không có câu nào có độ tin cậy thấp.'
       : filter === 'missing'
         ? 'Tất cả câu hỏi và các ý đã có đáp án.'
-        : 'Không có câu hỏi nào để hiển thị.';
+        : filter === 'new'
+          ? 'Không còn câu mới nào chưa lưu.'
+          : 'Không có câu hỏi nào để hiển thị.';
   const retryableErrors = check.errors.filter((error) => (
     error && error.url && state.selectedImages.some((item) => item.url === error.url)
   ));
@@ -2318,6 +2588,7 @@ function renderCheck({ scroll = true } = {}) {
       ` : ''}
 
       ${isEdit ? `
+        ${renderCheckAddImages(check)}
         <section class="card check-add-bar">
           <div>
             <strong>Thêm câu hỏi thủ công</strong><br>
@@ -2334,10 +2605,11 @@ function renderCheck({ scroll = true } = {}) {
         <section class="card check-filters" aria-label="Lọc câu hỏi">
           <span class="check-filters__label">${icon('list')} Lọc câu hỏi</span>
           <div class="check-filters__buttons">
-            <button class="btn btn--ghost btn--sm check-filter-btn ${filter === 'all' ? 'is-active' : ''}" type="button" data-action="check-filter" data-filter="all">Tất cả (${questions.length})</button>
-            <button class="btn btn--ghost btn--sm check-filter-btn ${filter === 'ai' ? 'is-active' : ''}" type="button" data-action="check-filter" data-filter="ai">Chỉ hiện câu AI chọn (${analysis.aiChosen})</button>
-            <button class="btn btn--ghost btn--sm check-filter-btn ${filter === 'low' ? 'is-active' : ''}" type="button" data-action="check-filter" data-filter="low">Chỉ hiện câu độ tin cậy thấp (${analysis.lowConfidence})</button>
-            <button class="btn btn--ghost btn--sm check-filter-btn ${filter === 'missing' ? 'is-active' : ''} ${analysis.unanswered ? 'check-filter-btn--alert' : ''}" type="button" data-action="check-filter" data-filter="missing">${icon('warning')} Chưa có đáp án (${analysis.unanswered}${analysis.unansweredItems > analysis.unanswered ? ` câu · ${analysis.unansweredItems} ý` : ''})</button>
+            <button class="btn btn--ghost btn--sm check-filter-btn ${filter === 'all' ? 'is-active' : ''}" type="button" data-action="check-filter" data-filter="all" ${state.processing ? 'disabled' : ''}>Tất cả (${questions.length})</button>
+            <button class="btn btn--ghost btn--sm check-filter-btn ${filter === 'ai' ? 'is-active' : ''}" type="button" data-action="check-filter" data-filter="ai" ${state.processing ? 'disabled' : ''}>Chỉ hiện câu AI chọn (${analysis.aiChosen})</button>
+            <button class="btn btn--ghost btn--sm check-filter-btn ${filter === 'low' ? 'is-active' : ''}" type="button" data-action="check-filter" data-filter="low" ${state.processing ? 'disabled' : ''}>Chỉ hiện câu độ tin cậy thấp (${analysis.lowConfidence})</button>
+            <button class="btn btn--ghost btn--sm check-filter-btn ${filter === 'missing' ? 'is-active' : ''} ${analysis.unanswered ? 'check-filter-btn--alert' : ''}" type="button" data-action="check-filter" data-filter="missing" ${state.processing ? 'disabled' : ''}>${icon('warning')} Chưa có đáp án (${analysis.unanswered}${analysis.unansweredItems > analysis.unanswered ? ` câu · ${analysis.unansweredItems} ý` : ''})</button>
+            ${newCount ? `<button class="btn btn--ghost btn--sm check-filter-btn check-filter-btn--new ${filter === 'new' ? 'is-active' : ''}" type="button" data-action="check-filter" data-filter="new" ${state.processing ? 'disabled' : ''}>${icon('sparkles')} Chỉ hiện câu mới (${newCount})</button>` : ''}
           </div>
         </section>
 
@@ -2393,6 +2665,7 @@ function renderCheckMcqQuestion(question, index, isDuplicate = false) {
       <div class="check-card__head">
         <span class="tag">Câu ${index + 1}</span>
         <span class="tag">${icon('help')} Trắc nghiệm</span>
+        ${question.isNew ? `<span class="tag tag--new">${icon('sparkles')} Mới</span>` : ''}
         ${Number.isInteger(question.imageIndex) && question.imageIndex > 0 ? `<span class="tag tag--image">${icon('image')} Ảnh ${question.imageIndex}</span>` : ''}
         ${isDuplicate ? `
           <span class="tag tag--duplicate">
@@ -2440,6 +2713,7 @@ function renderCheckDungSaiQuestion(question, index, isDuplicate = false) {
       <div class="check-card__head">
         <span class="tag">Câu ${index + 1}</span>
         <span class="tag">${icon('check')} Đúng/Sai · ${items.length} ý</span>
+        ${question.isNew ? `<span class="tag tag--new">${icon('sparkles')} Mới</span>` : ''}
         ${Number.isInteger(question.imageIndex) && question.imageIndex > 0 ? `<span class="tag tag--image">${icon('image')} Ảnh ${question.imageIndex}</span>` : ''}
         ${isDuplicate ? `
           <span class="tag tag--duplicate">
@@ -2628,7 +2902,26 @@ function jumpToMissingAnswer() {
   if (radio) radio.focus({ preventScroll: true });
 }
 
+function scrollToFirstNewQuestion(questionId) {
+  if (!questionId) return;
+  const card = Array.from(app.querySelectorAll('.check-card[data-qid]'))
+    .find((item) => item.dataset.qid === questionId);
+  if (!card) return;
+
+  const reducedMotion = prefersReducedMotion();
+  const topbar = document.querySelector('.topbar');
+  const offset = (topbar ? topbar.getBoundingClientRect().height : 72) + 20;
+  const top = window.scrollY + card.getBoundingClientRect().top - offset;
+  window.scrollTo({ top: Math.max(0, top), behavior: reducedMotion ? 'auto' : 'smooth' });
+
+  if (!reducedMotion) {
+    card.classList.add('check-card--highlight');
+    window.setTimeout(() => card.classList.remove('check-card--highlight'), 1600);
+  }
+}
+
 function buildQuestionsForSave(questions) {
+  // Chỉ chép các trường của định dạng đã lưu; cờ tạm isNew của câu mới bị loại bỏ.
   return questions.map((question) => {
     if (isDungSaiQuestion(question)) {
       return {
@@ -2702,6 +2995,7 @@ function savePendingCheck() {
     };
     if (!writeJSON(STORAGE_KEYS.decks, decks)) return;
 
+    cleanupCheckAddImages();
     state.check = null;
     state.session = null;
     state.result = null;
@@ -2721,6 +3015,7 @@ function savePendingCheck() {
   if (!writeJSON(STORAGE_KEYS.decks, [deck, ...decks])) return;
 
   clearCheckDraft();
+  cleanupCheckAddImages();
   state.check = null;
   state.session = null;
   state.result = null;
@@ -2743,6 +3038,7 @@ function cancelCheck() {
     clearCheckDraft();
   }
 
+  cleanupCheckAddImages();
   state.check = null;
   renderHome();
   scrollToTop();
@@ -4646,6 +4942,7 @@ function goHome(force = false) {
   clearExamClock();
   if (state.session?.mode === 'exam') clearExamDraft();
   if (state.check?.mode === 'create') clearCheckDraft();
+  cleanupCheckAddImages();
   state.session = null;
   state.result = null;
   state.check = null;
@@ -4880,6 +5177,25 @@ function onAppClick(event) {
       deleteCheckQuestion(actionElement.dataset.qid);
       break;
 
+    case 'remove-check-image':
+      removeCheckAddImage(Number(actionElement.dataset.index));
+      break;
+
+    case 'clear-check-images':
+      cleanupCheckAddImages();
+      renderCheck({ scroll: false });
+      break;
+
+    case 'add-questions-from-images':
+      addQuestionsFromImages().catch((error) => {
+        console.error(error);
+        state.processing = false;
+        state.extractionAbort = null;
+        toast(`Không thể thêm câu hỏi từ ảnh: ${shortError(error)}`, 'error', 8000);
+        renderCheck({ scroll: false });
+      });
+      break;
+
     case 'add-check-q':
       addCheckQuestion();
       break;
@@ -4997,7 +5313,7 @@ function onAppChange(event) {
   const target = event.target;
 
   if (state.processing) {
-    if (target.id === 'imageInput' || target.id === 'importInput') target.value = '';
+    if (['imageInput', 'importInput', 'checkAddImageInput'].includes(target.id)) target.value = '';
     return;
   }
 
@@ -5008,10 +5324,22 @@ function onAppChange(event) {
     return;
   }
 
+  if (target.id === 'checkAddImageInput') {
+    const files = target.files;
+    target.value = '';
+    handleCheckImageSelection(files);
+    return;
+  }
+
   if (target.id === 'importInput') {
     const file = target.files && target.files[0];
     target.value = '';
     if (file) importDeckFile(file);
+    return;
+  }
+
+  if (target.id === 'checkAddAllowAI' && state.check) {
+    state.check.addAllowAI = Boolean(target.checked);
     return;
   }
 
@@ -5133,7 +5461,7 @@ function onAppSubmit(event) {
 }
 
 function onDragOver(event) {
-  const zone = event.target.closest('#uploadZone');
+  const zone = event.target.closest('#uploadZone, #checkAddZone');
   if (!zone || state.processing) return;
   event.preventDefault();
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
@@ -5141,14 +5469,14 @@ function onDragOver(event) {
 }
 
 function onDragLeave(event) {
-  const zone = event.target.closest('#uploadZone');
+  const zone = event.target.closest('#uploadZone, #checkAddZone');
   if (!zone) return;
   if (event.relatedTarget && zone.contains(event.relatedTarget)) return;
   zone.classList.remove('is-dragover');
 }
 
 function onDrop(event) {
-  const zone = event.target.closest('#uploadZone');
+  const zone = event.target.closest('#uploadZone, #checkAddZone');
   if (!zone) return;
   event.preventDefault();
   zone.classList.remove('is-dragover');
@@ -5156,9 +5484,12 @@ function onDrop(event) {
     toast('Đang xử lý ảnh, vui lòng chờ hoàn tất.', 'warning');
     return;
   }
-  if (event.dataTransfer && event.dataTransfer.files.length) {
-    handleImageSelection(event.dataTransfer.files);
+  if (!event.dataTransfer || !event.dataTransfer.files.length) return;
+  if (zone.id === 'checkAddZone') {
+    handleCheckImageSelection(event.dataTransfer.files);
+    return;
   }
+  handleImageSelection(event.dataTransfer.files);
 }
 
 function bindEvents() {
