@@ -806,26 +806,6 @@ svg {
   text-align: center;
 }
 
-.type-section {
-  margin-top: 22px;
-}
-
-.type-section h3 {
-  margin-bottom: 5px;
-  font-size: 0.98rem;
-}
-
-.type-section > p {
-  margin-bottom: 10px;
-  color: var(--muted);
-  font-size: 0.81rem;
-}
-
-.type-options {
-  display: grid;
-  gap: 9px;
-}
-
 .type-option {
   position: relative;
   display: flex;
@@ -897,6 +877,28 @@ svg {
 .type-option--check input:checked {
   border-width: 5px;
   border-radius: 5px;
+}
+
+.upload-lead {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 18px 0 0;
+  padding: 11px 13px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--gradient-soft);
+  color: var(--text-soft);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.upload-lead svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  margin-top: 2px;
+  color: var(--primary-text);
 }
 
 .upload-actions {

@@ -28,156 +28,79 @@ const RATE_LIMIT_RETRIES = 4;
 const RATE_LIMIT_WAITS = [5, 10, 20, 30];
 
 const TYPE_INFO = {
-  1: {
-    short: 'Có sẵn A–D',
-    title: 'Đề đã có lựa chọn A, B, C, D',
-    desc: 'AI chép nguyên văn câu hỏi, các lựa chọn và dùng dấu hiệu trong ảnh; nếu ảnh chưa có đáp án, AI tự chọn đáp án đúng nhất.'
-  },
-  2: {
-    short: 'Hỏi – đáp',
-    title: 'Đề cương dạng hỏi – đáp',
-    desc: 'Mỗi cặp hỏi – đáp thành một câu trắc nghiệm; AI tự soạn thêm 3 đáp án sai hợp lý.'
-  },
-  3: {
-    short: 'AI tạo đáp án',
-    title: 'Đề chỉ có câu hỏi',
-    desc: 'AI tự soạn 4 đáp án, chọn đáp án đúng theo kiến thức và kèm giải thích ngắn.'
-  },
-  4: {
-    short: 'Đúng/Sai nhiều ý',
-    title: 'Đề dạng Đúng/Sai (mỗi câu có các ý a, b, c, d)',
-    desc: 'Mỗi câu gồm một đoạn dẫn và các ý a, b, c, d. AI xác định Đúng/Sai cho từng ý, kèm giải thích và độ tin cậy.'
-  },
-  5: {
-    short: 'Hỗn hợp',
-    title: 'Tự nhận dạng từng câu (hỗn hợp trắc nghiệm và Đúng/Sai)',
-    desc: 'AI đọc ảnh và tự nhận dạng từng câu: câu trắc nghiệm A–D hoặc câu Đúng/Sai nhiều ý. Một bộ có thể chứa cả hai loại.'
-  }
+  1: { short: 'Có sẵn A–D' },
+  2: { short: 'Hỏi – đáp' },
+  3: { short: 'AI tạo đáp án' },
+  4: { short: 'Đúng/Sai nhiều ý' },
+  5: { short: 'Tự nhận dạng' }
 };
 
-const PROMPTS = {
-  1: `Bạn là trợ lý số hóa đề cương học tập. Hãy đọc ảnh được gửi và trả về DUY NHẤT một đối tượng JSON hợp lệ, không dùng Markdown, không thêm lời chào hay bất kỳ chữ nào bên ngoài JSON.
-
-QUY TẮC CHUNG BẮT BUỘC:
-1. Giữ đúng tiếng Việt có dấu, không tự ý dịch hoặc sửa nội dung.
-2. Không bỏ sót bất kỳ câu hỏi nào xuất hiện trong ảnh. Nếu ảnh có nhiều câu, trả về đủ tất cả.
-3. Mỗi câu phải có đúng 4 lựa chọn trong mảng "o", không thêm ký hiệu A., B., C., D. ở đầu nội dung lựa chọn.
-4. "a" là chỉ số 0, 1, 2 hoặc 3 của đáp án đúng trong mảng "o". Chỉ dùng null khi câu hỏi hoặc các lựa chọn bị mờ, cụt, không đọc được; không được để null chỉ vì ảnh không có dấu hiệu đáp án.
-5. "e" bắt buộc phải có: giải thích ngắn gọn 1–2 câu bằng tiếng Việt nêu lý do chọn đáp án đó.
-6. "ai_chon": true nếu đáp án do bạn tự chọn theo kiến thức vì ảnh không có dấu hiệu đáp án; false nếu đáp án lấy từ dấu hiệu có trong ảnh.
-7. "do_tin_cay": "cao", "vua" hoặc "thap" để cho biết độ tin cậy của đáp án bạn chọn.
-8. Không thêm câu hỏi không có trong ảnh, không thêm chữ ngoài JSON.
-
-ĐỊNH DẠNG BẮT BUỘC:
-{"questions":[{"q":"câu hỏi","o":["đáp án 1","đáp án 2","đáp án 3","đáp án 4"],"a":0,"e":"giải thích ngắn 1–2 câu","ai_chon":true,"do_tin_cay":"cao"}]}
-
-NHIỆM VỤ RIÊNG:
-Ảnh là đề cương trắc nghiệm đã có sẵn các lựa chọn A, B, C, D. Hãy chép nguyên văn câu hỏi và nội dung các lựa chọn, bỏ ký hiệu A., B., C., D. ở đầu mỗi lựa chọn.
-Bước 1 — Tìm dấu hiệu đáp án trong ảnh: gạch chân, tô đậm, khoanh tròn, đánh dấu tích, tô màu hoặc bảng đáp án. Nếu có dấu hiệu, dùng đúng đáp án đó, đặt "ai_chon": false và "do_tin_cay": "cao" (hoặc "vua" nếu dấu hiệu không thật rõ).
-Bước 2 — Nếu KHÔNG có bất kỳ dấu hiệu đáp án nào, hãy tự chọn đáp án đúng nhất theo kiến thức của bạn, đặt "ai_chon": true và "do_tin_cay" phù hợp. Tuyệt đối không để "a": null chỉ vì ảnh không có dấu hiệu; chỉ để null khi câu hỏi bị mờ, cụt hoặc không đọc được.
-Luôn viết "e" 1–2 câu nêu lý do chọn đáp án để người dùng kiểm tra lại.`,
-  2: `Bạn là trợ lý số hóa đề cương học tập. Hãy đọc ảnh được gửi và trả về DUY NHẤT một đối tượng JSON hợp lệ, không dùng Markdown, không thêm lời chào hay bất kỳ chữ nào bên ngoài JSON.
-
-QUY TẮC CHUNG BẮT BUỘC:
-1. Giữ đúng tiếng Việt có dấu, không tự ý dịch hoặc sửa nội dung.
-2. Không bỏ sót bất kỳ câu hỏi nào xuất hiện trong ảnh. Nếu ảnh có nhiều câu, trả về đủ tất cả.
-3. Mỗi câu phải có đúng 4 lựa chọn trong mảng "o", không thêm ký hiệu A., B., C., D. ở đầu nội dung lựa chọn.
-4. "a" là chỉ số 0, 1, 2 hoặc 3 của đáp án đúng trong mảng "o".
-5. "e" là giải thích ngắn gọn bằng tiếng Việt; có thể để chuỗi rỗng.
-6. Không thêm câu hỏi không có trong ảnh, không thêm chữ ngoài JSON.
-
-ĐỊNH DẠNG BẮT BUỘC:
-{"questions":[{"q":"câu hỏi","o":["đáp án 1","đáp án 2","đáp án 3","đáp án 4"],"a":0,"e":"giải thích ngắn"}]}
-
-NHIỆM VỤ RIÊNG:
-Ảnh là đề cương dạng hỏi – đáp. Mỗi cặp câu hỏi và câu trả lời trong ảnh phải trở thành một câu trắc nghiệm. Nội dung "q" là câu hỏi; đáp án đúng lấy từ câu trả lời trong ảnh (rút gọn vừa đủ nếu câu trả lời quá dài, nhưng giữ đúng ý). Hãy tự soạn thêm 3 đáp án sai hợp lý, cùng văn phong và độ dài tương đương, không trùng với đáp án đúng. Đặt đáp án đúng ở vị trí ngẫu nhiên trong 4 lựa chọn và ghi đúng chỉ số vào "a". Chỉ dùng kiến thức trong ảnh để xác định đáp án đúng; không đổi câu trả lời gốc.`,
-  3: `Bạn là trợ lý số hóa đề cương học tập. Hãy đọc ảnh được gửi và trả về DUY NHẤT một đối tượng JSON hợp lệ, không dùng Markdown, không thêm lời chào hay bất kỳ chữ nào bên ngoài JSON.
-
-QUY TẮC CHUNG BẮT BUỘC:
-1. Giữ đúng tiếng Việt có dấu, không tự ý dịch hoặc sửa nội dung.
-2. Không bỏ sót bất kỳ câu hỏi nào xuất hiện trong ảnh. Nếu ảnh có nhiều câu, trả về đủ tất cả.
-3. Mỗi câu phải có đúng 4 lựa chọn trong mảng "o", không thêm ký hiệu A., B., C., D. ở đầu nội dung lựa chọn.
-4. "a" là chỉ số 0, 1, 2 hoặc 3 của đáp án đúng trong mảng "o".
-5. "e" là giải thích ngắn gọn bằng tiếng Việt vì sao đáp án đó đúng.
-6. Không thêm câu hỏi không có trong ảnh, không thêm chữ ngoài JSON.
-
-ĐỊNH DẠNG BẮT BUỘC:
-{"questions":[{"q":"câu hỏi","o":["đáp án 1","đáp án 2","đáp án 3","đáp án 4"],"a":0,"e":"giải thích ngắn"}]}
-
-NHIỆM VỤ RIÊNG:
-Ảnh chỉ có câu hỏi, chưa có đáp án. Với mỗi câu hỏi trong ảnh, hãy tự soạn 4 đáp án ngắn gọn, rõ ràng, hợp lý; chỉ có một đáp án đúng theo kiến thức. Chọn đáp án đúng, ghi chỉ số vào "a" và viết "e" giải thích ngắn. Các đáp án sai phải có văn phong và độ dài tương đương, không quá dễ loại trừ. Không bịa thêm câu hỏi ngoài ảnh.`
-};
-
-/* Dùng khi người dùng tắt ô "Nếu ảnh chưa có đáp án, để AI tự chọn". */
-/* Dạng 4: đề Đúng/Sai nhiều ý. */
-PROMPTS[4] = `Bạn là trợ lý số hóa đề cương học tập. Hãy đọc ảnh được gửi và trả về DUY NHẤT một đối tượng JSON hợp lệ, không dùng Markdown, không thêm lời chào hay bất kỳ chữ nào bên ngoài JSON.
-
-QUY TẮC CHUNG BẮT BUỘC:
-1. Giữ đúng tiếng Việt có dấu, không tự ý dịch hoặc sửa nội dung.
-2. Không bỏ sót bất kỳ câu hỏi nào xuất hiện trong ảnh. Nếu ảnh có nhiều câu, trả về đủ tất cả.
-3. Mỗi câu Đúng/Sai gồm "q" là đoạn dẫn/dữ kiện của câu (có thể để chuỗi rỗng nếu ảnh không có đoạn dẫn) và "items" là mảng từ 2 đến 6 ý, thường là 4 ý a, b, c, d.
-4. Chép nguyên văn nội dung từng ý vào "t" và bỏ ký hiệu a), b), c), d) hoặc a., b., c., d. ở đầu ý. Không thêm ký hiệu vào nội dung.
-5. "a" của mỗi ý là true nếu ý Đúng, false nếu ý Sai. Chỉ dùng null khi nội dung ý bị mờ, cụt hoặc không đọc được; không được để null chỉ vì ảnh không ghi đáp án.
-6. Bước 1 — tìm dấu hiệu đáp án trong ảnh: đáp án đã ghi sẵn, chữ Đ/S, dấu tích, gạch chân, tô đậm, khoanh tròn, tô màu hoặc bảng đáp án. Nếu có dấu hiệu, dùng đúng đáp án đó và đặt "ai_chon": false. Nếu dấu hiệu không rõ, đặt "do_tin_cay": "vua".
-7. Bước 2 — nếu ảnh KHÔNG có dấu hiệu đáp án, hãy tự xác định Đúng/Sai cho từng ý theo kiến thức của bạn, đặt "ai_chon": true và "do_tin_cay" phù hợp. Tuyệt đối không để null chỉ vì ảnh thiếu đáp án.
-8. "e" bắt buộc với TỪNG ý: giải thích ngắn gọn 1 câu bằng tiếng Việt vì sao ý đó Đúng hoặc Sai.
-9. "do_tin_cay" của từng ý là "cao", "vua" hoặc "thap".
-10. "topic" là chủ đề ngắn gọn của câu nếu xác định được, nếu không thì để chuỗi rỗng.
-11. Không thêm câu hỏi không có trong ảnh, không thêm chữ ngoài JSON.
-
-ĐỊNH DẠNG BẮT BUỘC:
-{"questions":[{"type":"dungsai","q":"đoạn dẫn hoặc dữ kiện của câu","topic":"chủ đề","items":[{"t":"nội dung ý","a":true,"e":"giải thích ngắn cho ý này","ai_chon":true,"do_tin_cay":"cao"}]}]}
-
-NHIỆM VỤ RIÊNG:
-Ảnh là đề cương dạng Đúng/Sai nhiều ý. Mỗi câu có một đoạn dẫn và các ý a, b, c, d (mỗi ý phải chọn Đúng hoặc Sai). Hãy tách đủ tất cả các câu, giữ nguyên văn nội dung đoạn dẫn và từng ý, xác định đáp án Đúng/Sai cho từng ý theo đúng thứ tự quy tắc ở trên.`;
-
-/* Dạng 5: tự nhận dạng từng câu, cho phép trộn trắc nghiệm và Đúng/Sai. */
-PROMPTS[5] = `Bạn là trợ lý số hóa đề cương học tập. Hãy đọc ảnh được gửi và trả về DUY NHẤT một đối tượng JSON hợp lệ, không dùng Markdown, không thêm lời chào hay bất kỳ chữ nào bên ngoài JSON.
+const PROMPT_AUTO = `Bạn là trợ lý số hóa đề cương học tập. Hãy đọc ảnh được gửi và trả về DUY NHẤT một đối tượng JSON hợp lệ, không dùng Markdown, không thêm lời chào hay bất kỳ chữ nào bên ngoài JSON.
 
 QUY TẮC CHUNG BẮT BUỘC:
 1. Giữ đúng tiếng Việt có dấu, không tự ý dịch hoặc sửa nội dung.
 2. Không bỏ sót bất kỳ câu hỏi nào xuất hiện trong ảnh. Nếu ảnh có nhiều câu, trả về đủ tất cả.
 3. Tự nhận dạng từng câu và ghi "type" là "tracnghiem" hoặc "dungsai":
-   - "tracnghiem": câu có 4 lựa chọn A, B, C, D. Dùng "o" cho 4 lựa chọn, "a" là chỉ số 0–3 của đáp án đúng.
-   - "dungsai": câu có một đoạn dẫn và các ý a, b, c, d (mỗi ý chọn Đúng/Sai). Dùng "items" cho các ý, mỗi ý có "t", "a" là true/false.
-4. Không thêm ký hiệu A., B., C., D. vào nội dung lựa chọn và không thêm a), b), c), d) vào nội dung ý.
-5. Với câu trắc nghiệm: chỉ dùng "a": null khi câu hỏi hoặc lựa chọn bị mờ/cụt; nếu ảnh không có dấu hiệu đáp án thì tự chọn theo kiến thức, đặt "ai_chon": true.
-6. Với câu Đúng/Sai: mỗi câu có từ 2 đến 6 ý (thường 4 ý). "a" của mỗi ý là true/false; chỉ null khi ý mờ/cụt. Nếu ảnh không có dấu hiệu đáp án thì tự xác định theo kiến thức, đặt "ai_chon": true.
-7. Tìm dấu hiệu đáp án trong ảnh trước (đáp án ghi sẵn, Đ/S, tích, gạch chân, tô đậm, khoanh tròn, bảng đáp án). Nếu có dấu hiệu, dùng đúng đáp án đó và đặt "ai_chon": false.
-8. "e" bắt buộc: với câu trắc nghiệm là giải thích ngắn vì sao chọn đáp án; với câu Đúng/Sai phải có "e" riêng cho TỪNG ý, giải thích ngắn vì sao ý đó Đúng hoặc Sai.
-9. "do_tin_cay" là "cao", "vua" hoặc "thap"; với câu Đúng/Sai ghi cho từng ý, với câu trắc nghiệm ghi ở cấp câu.
-10. "topic" là chủ đề ngắn gọn của câu nếu xác định được, nếu không thì để chuỗi rỗng.
-11. Không thêm câu hỏi không có trong ảnh, không thêm chữ ngoài JSON.
+   - "tracnghiem": câu trắc nghiệm A–D, cặp hỏi–đáp hoặc câu hỏi sẽ được chuyển thành 4 lựa chọn.
+   - "dungsai": câu có đoạn dẫn và các ý a, b, c, d (mỗi ý chọn Đúng/Sai).
+4. Với câu "tracnghiem": dùng "o" cho đúng 4 lựa chọn, "a" là chỉ số 0, 1, 2 hoặc 3 của đáp án đúng trong "o"; "e" là giải thích ngắn.
+5. Với câu "dungsai": dùng "items" cho từ 2 đến 6 ý (thường 4 ý); mỗi ý có "t" là nội dung, "a" là true/false, "e" là giải thích ngắn. Chỉ để "a" của một ý là null khi nội dung ý bị mờ, cụt hoặc không đọc được.
+6. Không thêm ký hiệu A., B., C., D. vào nội dung lựa chọn và không thêm a), b), c), d) vào nội dung ý.
+7. Tìm dấu hiệu đáp án trong ảnh trước: gạch chân, tô đậm, khoanh tròn, đánh dấu tích, tô màu, chữ Đ/S hoặc bảng đáp án. Nếu có dấu hiệu, dùng đúng đáp án đó và đặt "ai_chon": false.
+8. "ai_chon": true nếu đáp án đúng do bạn tự suy ra theo kiến thức; false nếu lấy từ dấu hiệu hoặc câu trả lời có sẵn trong ảnh. Với câu "dungsai", ghi "ai_chon" riêng cho từng ý.
+9. "do_tin_cay": "cao", "vua" hoặc "thap" cho biết độ tin cậy. Với câu "dungsai", ghi riêng cho từng ý.
+10. "e" bắt buộc: với câu trắc nghiệm là giải thích ngắn vì sao chọn đáp án; với câu Đúng/Sai phải có "e" riêng cho từng ý, giải thích ngắn vì sao ý đó Đúng hoặc Sai.
+11. "topic" là chủ đề ngắn gọn của câu nếu xác định được, nếu không thì để chuỗi rỗng.
+12. Không thêm câu hỏi không có trong ảnh, không thêm chữ ngoài JSON.
+
+CÁCH XỬ LÝ THEO TỪNG DẠNG:
+a) Câu đã có A–D: chép nguyên văn câu hỏi và các lựa chọn. Tìm dấu hiệu đáp án trong ảnh; nếu có, dùng đúng đáp án đó với "ai_chon": false. Nếu không có dấu hiệu nào, tự chọn đáp án đúng nhất theo kiến thức với "ai_chon": true.
+b) Cặp hỏi–đáp (có câu trả lời nhưng chưa có lựa chọn): lấy câu trả lời trong ảnh làm đáp án đúng, giữ đúng ý (có thể rút gọn nếu quá dài). Tự soạn thêm 3 đáp án sai hợp lý cùng văn phong và độ dài, không trùng đáp án đúng. Đặt đáp án đúng ở vị trí ngẫu nhiên trong 4 lựa chọn, ghi đúng chỉ số vào "a" và đặt "ai_chon": false.
+c) Chỉ có câu hỏi: tự soạn 4 đáp án ngắn gọn, rõ ràng; chọn đáp án đúng theo kiến thức, ghi chỉ số vào "a", viết "e" giải thích ngắn và đặt "ai_chon": true.
+d) Đúng/Sai nhiều ý a, b, c, d: dùng đúng cấu trúc "dungsai" với "items"; xác định Đúng/Sai cho từng ý theo dấu hiệu trong ảnh hoặc theo kiến thức như quy tắc trên.
 
 ĐỊNH DẠNG BẮT BUỘC:
 {"questions":[{"type":"tracnghiem","q":"câu hỏi","topic":"chủ đề","o":["đáp án 1","đáp án 2","đáp án 3","đáp án 4"],"a":0,"e":"giải thích ngắn","ai_chon":true,"do_tin_cay":"cao"},{"type":"dungsai","q":"đoạn dẫn hoặc dữ kiện của câu","topic":"chủ đề","items":[{"t":"nội dung ý","a":true,"e":"giải thích ngắn cho ý này","ai_chon":true,"do_tin_cay":"cao"}]}]}
 
 NHIỆM VỤ RIÊNG:
-Ảnh có thể chứa cả câu trắc nghiệm A–D và câu Đúng/Sai nhiều ý, hoặc chỉ một loại. Hãy phân loại đúng từng câu, tách đủ nội dung, xác định đáp án theo dấu hiệu trong ảnh hoặc theo kiến thức như quy tắc ở trên.`;
+Ảnh có thể chứa lẫn câu trắc nghiệm A–D, cặp hỏi–đáp, câu chỉ có câu hỏi và câu Đúng/Sai nhiều ý, hoặc chỉ một dạng. Hãy phân loại đúng từng câu, tách đủ nội dung và xác định đáp án theo đúng các quy tắc trên.`;
 
-const PROMPTS_1_NO_AI = `Bạn là trợ lý số hóa đề cương học tập. Hãy đọc ảnh được gửi và trả về DUY NHẤT một đối tượng JSON hợp lệ, không dùng Markdown, không thêm lời chào hay bất kỳ chữ nào bên ngoài JSON.
+/* Dùng khi người dùng tắt ô "Nếu ảnh chưa có đáp án, để AI tự chọn". */
+const PROMPT_AUTO_NO_AI = `Bạn là trợ lý số hóa đề cương học tập. Hãy đọc ảnh được gửi và trả về DUY NHẤT một đối tượng JSON hợp lệ, không dùng Markdown, không thêm lời chào hay bất kỳ chữ nào bên ngoài JSON.
 
 QUY TẮC CHUNG BẮT BUỘC:
 1. Giữ đúng tiếng Việt có dấu, không tự ý dịch hoặc sửa nội dung.
 2. Không bỏ sót bất kỳ câu hỏi nào xuất hiện trong ảnh. Nếu ảnh có nhiều câu, trả về đủ tất cả.
-3. Mỗi câu phải có đúng 4 lựa chọn trong mảng "o", không thêm ký hiệu A., B., C., D. ở đầu nội dung lựa chọn.
-4. "a" là chỉ số 0, 1, 2 hoặc 3 của đáp án đúng trong mảng "o"; dùng null nếu không thể xác định chắc chắn.
-5. "e" bắt buộc phải có: giải thích ngắn gọn 1–2 câu bằng tiếng Việt nêu lý do; nếu không thấy dấu hiệu đáp án, ghi rõ là không tìm thấy dấu hiệu trong ảnh.
-6. "ai_chon": luôn false trong chế độ này vì bạn không được tự chọn đáp án.
-7. "do_tin_cay": "cao", "vua" hoặc "thap" theo độ rõ của dấu hiệu đáp án trong ảnh.
-8. Không thêm câu hỏi không có trong ảnh, không thêm chữ ngoài JSON.
+3. Tự nhận dạng từng câu và ghi "type" là "tracnghiem" hoặc "dungsai":
+   - "tracnghiem": câu trắc nghiệm A–D, cặp hỏi–đáp hoặc câu hỏi sẽ được chuyển thành 4 lựa chọn.
+   - "dungsai": câu có đoạn dẫn và các ý a, b, c, d (mỗi ý chọn Đúng/Sai).
+4. Với câu "tracnghiem": dùng "o" cho đúng 4 lựa chọn; "a" là chỉ số 0, 1, 2 hoặc 3 của đáp án đúng, hoặc null khi ảnh không có dấu hiệu đáp án.
+5. Với câu "dungsai": dùng "items" cho từ 2 đến 6 ý (thường 4 ý); mỗi ý có "t" là nội dung, "a" là true/false hoặc null khi ảnh không có dấu hiệu cho ý đó, "e" là giải thích ngắn.
+6. Không thêm ký hiệu A., B., C., D. vào nội dung lựa chọn và không thêm a), b), c), d) vào nội dung ý.
+7. Chỉ dùng đáp án có sẵn trong ảnh: dấu hiệu gạch chân, tô đậm, khoanh tròn, đánh dấu tích, tô màu, chữ Đ/S, bảng đáp án hoặc câu trả lời của cặp hỏi–đáp. Không tự suy đoán đáp án.
+8. "ai_chon": luôn false trong chế độ này vì bạn không được tự chọn đáp án.
+9. "do_tin_cay": "cao", "vua" hoặc "thap" theo độ rõ của dấu hiệu đáp án trong ảnh. Với câu "dungsai", ghi riêng cho từng ý.
+10. Nếu câu trắc nghiệm A–D hoặc câu chỉ có câu hỏi không có dấu hiệu đáp án, đặt "a": null. Với cặp hỏi–đáp, lấy câu trả lời trong ảnh làm đáp án như mục b. Nếu một ý Đúng/Sai không có dấu hiệu, đặt "a": null cho ý đó. Không tự chọn đáp án khi ảnh không có dấu hiệu.
+11. "e" bắt buộc: với câu trắc nghiệm là giải thích ngắn; nếu không thấy dấu hiệu đáp án, ghi rõ là không tìm thấy dấu hiệu trong ảnh. Với câu Đúng/Sai phải có "e" riêng cho từng ý.
+12. "topic" là chủ đề ngắn gọn của câu nếu xác định được, nếu không thì để chuỗi rỗng.
+13. Không thêm câu hỏi không có trong ảnh, không thêm chữ ngoài JSON.
+
+CÁCH XỬ LÝ THEO TỪNG DẠNG:
+a) Câu đã có A–D: chép nguyên văn câu hỏi và các lựa chọn. Nếu có dấu hiệu đáp án trong ảnh, dùng đúng đáp án đó; nếu không có dấu hiệu, đặt "a": null.
+b) Cặp hỏi–đáp (có câu trả lời nhưng chưa có lựa chọn): lấy câu trả lời trong ảnh làm đáp án đúng, giữ đúng ý (có thể rút gọn nếu quá dài). Tự soạn thêm 3 đáp án sai hợp lý cùng văn phong và độ dài, không trùng đáp án đúng. Đặt đáp án đúng ở vị trí ngẫu nhiên trong 4 lựa chọn và ghi đúng chỉ số vào "a".
+c) Chỉ có câu hỏi: ảnh không có đáp án nên đặt "a": null; vẫn soạn 4 lựa chọn hợp lý để người dùng tự chọn ở màn hình kiểm tra, nhưng không tự chọn đáp án đúng.
+d) Đúng/Sai nhiều ý a, b, c, d: dùng đúng cấu trúc "dungsai" với "items"; chỉ điền true/false khi ảnh có dấu hiệu đáp án, nếu không đặt null cho từng ý.
 
 ĐỊNH DẠNG BẮT BUỘC:
-{"questions":[{"q":"câu hỏi","o":["đáp án 1","đáp án 2","đáp án 3","đáp án 4"],"a":0,"e":"giải thích ngắn 1–2 câu","ai_chon":false,"do_tin_cay":"cao"}]}
+{"questions":[{"type":"tracnghiem","q":"câu hỏi","topic":"chủ đề","o":["đáp án 1","đáp án 2","đáp án 3","đáp án 4"],"a":null,"e":"giải thích ngắn","ai_chon":false,"do_tin_cay":"thap"},{"type":"dungsai","q":"đoạn dẫn hoặc dữ kiện của câu","topic":"chủ đề","items":[{"t":"nội dung ý","a":null,"e":"giải thích ngắn cho ý này","ai_chon":false,"do_tin_cay":"thap"}]}]}
 
 NHIỆM VỤ RIÊNG:
-Ảnh là đề cương trắc nghiệm đã có sẵn các lựa chọn A, B, C, D. Hãy chép nguyên văn câu hỏi và nội dung các lựa chọn, bỏ ký hiệu A., B., C., D. ở đầu mỗi lựa chọn. Xác định đáp án đúng dựa vào dấu hiệu trong ảnh như gạch chân, tô đậm, khoanh tròn, đánh dấu tích, tô màu hoặc bảng đáp án. Nếu không thấy dấu hiệu rõ ràng, đặt "a": null, "ai_chon": false và "do_tin_cay": "thap". Không tự suy đoán đáp án khi ảnh không có dấu hiệu.`;
+Ảnh có thể chứa lẫn câu trắc nghiệm A–D, cặp hỏi–đáp, câu chỉ có câu hỏi và câu Đúng/Sai nhiều ý, hoặc chỉ một dạng. Hãy phân loại đúng từng câu, tách đủ nội dung và chỉ điền đáp án khi tìm thấy dấu hiệu hoặc câu trả lời có sẵn trong ảnh.`;
 
 const state = {
   view: 'home',
   cfg: null,
   selectedImages: [], // [{ file, url }]
-  draftType: 1,
   allowAIAnswer: true,
   processing: false,
   extractionAbort: null,
@@ -312,9 +235,8 @@ function normalizeAiChosen(value, fallback = false) {
   return fallback;
 }
 
-// Kiểu 1: AI chỉ chọn đáp án khi ảnh không có dấu hiệu (do AI trả về).
-// Kiểu 2: đáp án đúng lấy từ câu trả lời trong ảnh nên không phải do AI chọn.
-// Kiểu 3: AI tự soạn và chọn đáp án nên luôn do AI chọn.
+// Chỉ dùng làm giá trị dự phòng khi đọc bộ cũ thiếu trường ai_chon.
+// Dữ liệu mới luôn lấy ai_chon riêng cho từng câu/ý do AI trả về.
 function defaultAiChosenForType(type) {
   return (Number(type) || 1) === 3;
 }
@@ -720,9 +642,9 @@ function renderHome() {
     <section class="hero">
       <span class="eyebrow">${icon('sparkles')} AI đọc ảnh đề cương</span>
       <h1>Biến ảnh đề cương thành <span class="gradient-text">bài trắc nghiệm</span> để ôn tập</h1>
-      <p>Tải ảnh đề cương, để AI tách câu hỏi và đáp án, rồi luyện tập hoặc thi thử ngay trên trình duyệt. Mọi dữ liệu được lưu trên máy của bạn.</p>
+      <p>Tải ảnh đề cương, để AI tự nhận dạng từng câu và tách đáp án, rồi luyện tập hoặc thi thử ngay trên trình duyệt. Mọi dữ liệu được lưu trên máy của bạn.</p>
       <div class="hero__stats">
-        <span class="hero__stat">${icon('layers')} 5 kiểu đề cương</span>
+        <span class="hero__stat">${icon('layers')} Tự nhận dạng mọi kiểu câu</span>
         <span class="hero__stat">${icon('play')} Luyện tập tức thì</span>
         <span class="hero__stat">${icon('clock')} Thi thử có hẹn giờ</span>
         <span class="hero__stat">${icon('shield')} Lưu bằng localStorage</span>
@@ -749,29 +671,15 @@ function renderHome() {
 
         ${renderPreviewArea()}
 
-        <div class="type-section">
-          <h3>Chọn loại đề cương</h3>
-          <p>Mỗi loại dùng một cách đọc và tạo đáp án riêng.</p>
-          <div class="type-options">
-            ${[1, 2, 3, 4, 5].map((type) => `
-              <label class="type-option">
-                <input type="radio" name="draftType" value="${type}" ${state.draftType === type ? 'checked' : ''} ${state.processing ? 'disabled' : ''}>
-                <span class="type-option__body">
-                  <span class="type-option__title">${esc(getTypeInfo(type).title)}</span>
-                  <span class="type-option__desc">${esc(getTypeInfo(type).desc)}</span>
-                </span>
-              </label>
-            `).join('')}
-          </div>
-        </div>
-
         <label class="type-option type-option--check auto-answer-option">
           <input id="autoAnswerToggle" type="checkbox" ${state.allowAIAnswer ? 'checked' : ''} ${state.processing ? 'disabled' : ''}>
           <span class="type-option__body">
             <span class="type-option__title">Nếu ảnh chưa có đáp án, để AI tự chọn</span>
-            <span class="type-option__desc">Khi ảnh không có dấu hiệu đáp án, AI sẽ tự chọn đáp án đúng nhất theo kiến thức. Tắt để giữ trống và tự chọn ở màn hình kiểm tra.</span>
+            <span class="type-option__desc">Áp dụng cho mọi câu: khi ảnh không có dấu hiệu đáp án, AI sẽ tự chọn đáp án đúng nhất theo kiến thức. Tắt để giữ trống và tự chọn ở màn hình kiểm tra.</span>
           </span>
         </label>
+
+        <p class="upload-lead">${icon('sparkles')} <span>AI tự nhận dạng từng câu: trắc nghiệm A–D, hỏi–đáp, chỉ có câu hỏi hoặc Đúng/Sai. Một ảnh có thể chứa nhiều dạng.</span></p>
 
         <div class="upload-actions">
           <button class="btn btn--primary btn--large" type="button" data-action="start-extract" ${canStart ? '' : 'disabled'}>
@@ -787,6 +695,7 @@ function renderHome() {
       <h3 id="usageNoteTitle">${icon('shield')} Lưu ý khi sử dụng</h3>
       <ul>
         <li>API key chỉ được lưu trong localStorage của trình duyệt này, không nằm trong mã nguồn.</li>
+        <li>AI tự nhận dạng từng câu nên một ảnh có thể trộn trắc nghiệm A–D, hỏi–đáp, câu chỉ có câu hỏi và Đúng/Sai.</li>
         <li>AI có thể đọc sai hoặc tự soạn đáp án; hãy kiểm tra kỹ ở màn hình xác nhận trước khi lưu.</li>
         <li>Đề cương được lưu trên máy. Xóa dữ liệu trình duyệt sẽ xóa các bộ câu hỏi.</li>
       </ul>
@@ -1255,15 +1164,13 @@ function waitWithCountdown(seconds, onTick, signal) {
   });
 }
 
-function getPrompt(type, allowAIAnswer = true) {
-  const typeNumber = Number(type) || 1;
-  if (typeNumber === 1) return allowAIAnswer ? PROMPTS[1] : PROMPTS_1_NO_AI;
-  return PROMPTS[typeNumber] || PROMPTS[1];
+function getPrompt(allowAIAnswer = true) {
+  return allowAIAnswer ? PROMPT_AUTO : PROMPT_AUTO_NO_AI;
 }
 
-async function extractQuestionsFromImage(dataUrl, type, config, onStatus, allowAIAnswer = true, signal = null) {
+async function extractQuestionsFromImage(dataUrl, config, onStatus, allowAIAnswer = true, signal = null) {
   const models = parseModelList(config.models);
-  const prompt = getPrompt(type, allowAIAnswer);
+  const prompt = getPrompt(allowAIAnswer);
   const failures = [];
 
   for (const model of models) {
@@ -1310,7 +1217,7 @@ async function extractQuestionsFromImage(dataUrl, type, config, onStatus, allowA
   throw error;
 }
 
-function normalizeExtractedDsItems(rawItems) {
+function normalizeExtractedDsItems(rawItems, allowAIAnswer = true) {
   const source = Array.isArray(rawItems) ? rawItems : [];
   const items = [];
   source.slice(0, 6).forEach((raw) => {
@@ -1319,37 +1226,38 @@ function normalizeExtractedDsItems(rawItems) {
     const text = String(item.t ?? item.text ?? item.content ?? '').trim();
     if (!text) return;
     const answer = normalizeTruthAnswer(item.a ?? item.answer);
-    const aiChosen = normalizeAiChosen(item.ai_chon ?? item.aiChosen, true);
+    const aiChosen = allowAIAnswer
+      ? normalizeAiChosen(item.ai_chon ?? item.aiChosen, true)
+      : false;
+    const confidence = normalizeConfidence(item.do_tin_cay)
+      || (allowAIAnswer
+        ? (aiChosen ? 'vua' : '')
+        : (typeof answer === 'boolean' ? 'cao' : 'thap'));
     items.push({
       t: text,
       a: answer,
       e: String(item.e ?? item.explanation ?? '').trim(),
       ai_chon: aiChosen,
-      do_tin_cay: normalizeItemConfidence(item.do_tin_cay, aiChosen)
+      do_tin_cay: confidence
     });
   });
   return items;
 }
 
-function normalizeExtractedQuestions(parsed, type, imageIndex, allowAIAnswer = true) {
+function normalizeExtractedQuestions(parsed, imageIndex, allowAIAnswer = true) {
   const rawQuestions = Array.isArray(parsed) ? parsed : parsed?.questions;
   if (!Array.isArray(rawQuestions)) {
     throw new Error('AI không trả về mảng "questions" đúng định dạng.');
   }
 
-  const typeNumber = Number(type) || 1;
   const result = [];
   rawQuestions.forEach((item) => {
     if (!item || typeof item !== 'object') return;
     const questionText = String(item.q ?? item.question ?? '').trim();
-    const kind = typeNumber === 4
-      ? 'dungsai'
-      : typeNumber === 5
-        ? normalizeQuestionType(item.type, item)
-        : 'tracnghiem';
+    const kind = normalizeQuestionType(item.type, item);
 
     if (kind === 'dungsai') {
-      const items = normalizeExtractedDsItems(item.items);
+      const items = normalizeExtractedDsItems(item.items, allowAIAnswer);
       if (!items.length) return;
       result.push({
         id: uid('q'),
@@ -1369,11 +1277,12 @@ function normalizeExtractedQuestions(parsed, type, imageIndex, allowAIAnswer = t
     if (!questionText && options.every((option) => !option)) return;
 
     const answer = normalizeAnswerIndex(item.a);
-    const aiChosen = typeNumber === 1
-      ? (allowAIAnswer ? normalizeAiChosen(item.ai_chon, Boolean(item.aiAnswers)) : false)
-      : typeNumber === 5
-        ? normalizeAiChosen(item.ai_chon, Boolean(item.aiAnswers))
-        : defaultAiChosenForType(typeNumber);
+    const aiChosen = allowAIAnswer
+      ? normalizeAiChosen(item.ai_chon ?? item.aiChosen ?? item.aiAnswers, false)
+      : false;
+    const confidence = allowAIAnswer
+      ? resolveConfidence(item.do_tin_cay, 5, aiChosen)
+      : (normalizeConfidence(item.do_tin_cay) || (isValidAnswer(answer) ? 'cao' : 'thap'));
 
     result.push({
       id: uid('q'),
@@ -1384,7 +1293,7 @@ function normalizeExtractedQuestions(parsed, type, imageIndex, allowAIAnswer = t
       e: String(item.e ?? item.explanation ?? '').trim(),
       aiAnswers: aiChosen,
       ai_chon: aiChosen,
-      do_tin_cay: resolveConfidence(item.do_tin_cay, typeNumber, aiChosen),
+      do_tin_cay: confidence,
       imageIndex
     });
   });
@@ -1398,7 +1307,7 @@ function describeImageError(error) {
   return shortError(error);
 }
 
-async function processImageEntries(entries, { type, allowAIAnswer, config, signal, label = 'Ảnh' }) {
+async function processImageEntries(entries, { allowAIAnswer, config, signal, label = 'Ảnh' }) {
   const allQuestions = [];
   const errors = [];
   const successfulUrls = new Set();
@@ -1447,10 +1356,10 @@ async function processImageEntries(entries, { type, allowAIAnswer, config, signa
 
     try {
       setProcessing(`${label} ${index + 1}/${entries.length}…`, 'Đang gửi ảnh cho AI…', basePercent + 6);
-      const parsed = await extractQuestionsFromImage(dataUrl, type, config, (detail) => {
+      const parsed = await extractQuestionsFromImage(dataUrl, config, (detail) => {
         setProcessing(`${label} ${index + 1}/${entries.length}…`, detail, Math.min(96, basePercent + 6));
       }, allowAIAnswer, signal);
-      const questions = normalizeExtractedQuestions(parsed, type, imageNo, allowAIAnswer);
+      const questions = normalizeExtractedQuestions(parsed, imageNo, allowAIAnswer);
       if (!questions.length) {
         addError(entry, 'AI không tìm thấy câu hỏi nào trong ảnh này.');
       } else {
@@ -1504,8 +1413,8 @@ async function startExtraction() {
   }
 
   const entries = state.selectedImages.slice();
-  const type = Number(state.draftType) || 1;
-  const allowAIAnswer = type === 1 ? Boolean(state.allowAIAnswer) : true;
+  const type = 5;
+  const allowAIAnswer = Boolean(state.allowAIAnswer);
   const controller = new AbortController();
 
   state.extractionAbort = controller;
@@ -1520,7 +1429,6 @@ async function startExtraction() {
   let result = { allQuestions: [], errors: [], successfulUrls: new Set(), aborted: false };
   try {
     result = await processImageEntries(entries, {
-      type,
       allowAIAnswer,
       config,
       signal: controller.signal
@@ -1594,7 +1502,6 @@ async function retryFailedImages() {
   let result = { allQuestions: [], errors: [], successfulUrls: new Set(), aborted: false };
   try {
     result = await processImageEntries(entries, {
-      type: Number(check.type) || 1,
       allowAIAnswer: check.allowAIAnswer !== false,
       config,
       signal: controller.signal,
@@ -2414,11 +2321,13 @@ function inferDeckType(questions) {
   return dsCount === questions.length ? 4 : 5;
 }
 
-// Bộ khai báo kiểu 4/5 hoặc có câu Đúng/Sai thì luôn phản ánh đúng nội dung thực tế.
+// Bộ mới dùng type 5 (tự nhận dạng). Bộ cũ giữ type 1–4, riêng bộ có câu Đúng/Sai
+// vẫn được suy ra theo nội dung thực tế để nhãn hiển thị không sai.
 function resolveDeckType(baseType, questions) {
-  const declared = [1, 2, 3, 4, 5].includes(Number(baseType)) ? Number(baseType) : 1;
+  const declared = [1, 2, 3, 4, 5].includes(Number(baseType)) ? Number(baseType) : 5;
+  if (declared === 5) return 5;
   const hasDs = Array.isArray(questions) && questions.some(isDungSaiQuestion);
-  if (declared >= 4 || hasDs) return inferDeckType(questions);
+  if (declared === 4 || hasDs) return inferDeckType(questions);
   return declared;
 }
 
@@ -2460,9 +2369,7 @@ function getDecks() {
       // Deck cũ có thể chỉ lưu một trong hai trường ai_chon/aiAnswers. Ưu tiên giá trị đã lưu
       // để giữ nguyên hành vi; chỉ dùng mặc định theo kiểu khi dữ liệu cũ thiếu hoàn toàn.
       const storedAiChosen = question.ai_chon ?? question.aiAnswers;
-      const aiChosen = type === 1
-        ? normalizeAiChosen(storedAiChosen, false)
-        : normalizeAiChosen(storedAiChosen, defaultAiChosenForType(type));
+      const aiChosen = normalizeAiChosen(storedAiChosen, defaultAiChosenForType(type));
 
       questions.push({
         id: typeof question.id === 'string' && question.id ? question.id : uid('q'),
@@ -2766,9 +2673,8 @@ function normalizeImportedDeck(data, fileName, options = {}) {
     if (!isValidAnswer(answer)) {
       throw new Error(`Câu ${index + 1} chưa có đáp án đúng hợp lệ (0–3).`);
     }
-    const aiChosen = type === 1
-      ? normalizeAiChosen(item.ai_chon, Boolean(item.aiAnswers))
-      : defaultAiChosenForType(type);
+    const storedAiChosen = item.ai_chon ?? item.aiAnswers;
+    const aiChosen = normalizeAiChosen(storedAiChosen, defaultAiChosenForType(type));
     return {
       id: uid('q'),
       type: 'tracnghiem',
@@ -4517,11 +4423,6 @@ function onAppChange(event) {
     const file = target.files && target.files[0];
     target.value = '';
     if (file) importDeckFile(file);
-    return;
-  }
-
-  if (target.name === 'draftType') {
-    state.draftType = Number(target.value) || 1;
     return;
   }
 
