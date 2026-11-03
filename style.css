@@ -549,6 +549,68 @@ svg {
   align-items: start;
 }
 
+.resume-cards {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 22px;
+}
+
+.resume-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 18px 20px;
+  border-color: var(--border-strong);
+  background: var(--gradient-soft);
+}
+
+.resume-card__icon {
+  display: grid;
+  width: 46px;
+  height: 46px;
+  flex: none;
+  place-items: center;
+  border-radius: 14px;
+  background: var(--surface-solid);
+  color: var(--primary-text);
+  box-shadow: var(--shadow-sm);
+}
+
+.resume-card__icon svg {
+  width: 22px;
+  height: 22px;
+}
+
+.resume-card__body {
+  min-width: 0;
+  flex: 1 1 240px;
+}
+
+.resume-card__body h2 {
+  margin-bottom: 3px;
+  overflow-wrap: anywhere;
+  font-size: 1rem;
+  line-height: 1.35;
+}
+
+.resume-card__body p {
+  margin-bottom: 0;
+  color: var(--text-soft);
+  font-size: 0.83rem;
+}
+
+.resume-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.resume-card__actions .btn {
+  flex: 1 1 auto;
+}
+
 .upload-card {
   padding: 25px;
 }
@@ -1998,6 +2060,12 @@ svg {
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 14px;
+}
+
+.error-list__hint {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 0.78rem;
 }
 
 .check-list {
@@ -3562,6 +3630,15 @@ svg {
   .upload-actions {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .resume-card {
+    align-items: flex-start;
+  }
+
+  .resume-card__actions {
+    width: 100%;
+    margin-left: 0;
   }
 
   .view-head {

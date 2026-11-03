@@ -7,6 +7,8 @@ const STORAGE_KEYS = Object.freeze({
   decks: 'dc_decks',
   history: 'dc_history',
   config: 'dc_cfg',
+  draftCheck: 'dc_draft_check',
+  draftExam: 'dc_draft_exam',
   theme: 'theme' // Khóa giao diện theo yêu cầu, không dùng tiền tố dc_
 });
 
@@ -26,6 +28,9 @@ const JPEG_QUALITY = 0.85;
 const REQUEST_TIMEOUT_MS = 120000;
 const RATE_LIMIT_RETRIES = 4;
 const RATE_LIMIT_WAITS = [5, 10, 20, 30];
+const CHECK_DRAFT_VERSION = 1;
+const EXAM_DRAFT_VERSION = 1;
+const CHECK_DRAFT_DEBOUNCE_MS = 400;
 
 const TYPE_INFO = {
   1: { short: 'Có sẵn A–D' },
@@ -106,8 +111,10 @@ const state = {
   extractionAbort: null,
   progress: { text: '', detail: '', percent: 0 },
   check: null,
+  checkDraft: null,
   setup: null,
   session: null,
+  examDraft: null,
   result: null
 };
 
@@ -122,6 +129,9 @@ const aiSettingsPanel = document.getElementById('aiSettingsPanel');
 const aiBubbleDot = document.getElementById('aiBubbleDot');
 
 let examClock = null;
+let checkDraftTimer = null;
+let draftQuotaWarned = false;
+let examDraftSaveFailed = false;
 
 /* =========================================================
    2. Biểu tượng SVG dùng lại
@@ -404,6 +414,533 @@ function writeJSON(key, value) {
   }
 }
 
+/* =========================================================
+   Nháp chống mất dữ liệu khi tải lại hoặc đóng tab
+   ========================================================= */
+function isQuotaExceededError(error) {
+  return Boolean(error) && (
+    error.name === 'QuotaExceededError' ||
+    error.name === 'NS_ERROR_DOM_QUOTA_REACHED' ||
+    error.code === 22 ||
+    error.code === 1014
+  );
+}
+
+function readDraft(key) {
+  let raw = null;
+  try {
+    raw = localStorage.getItem(key);
+  } catch (error) {
+    console.warn(`Không đọc được nháp localStorage[${key}]`, error);
+    return null;
+  }
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed === null) {
+      removeDraftKey(key);
+      return null;
+    }
+    return parsed;
+  } catch (error) {
+    console.warn(`Nháp localStorage[${key}] bị hỏng, đã xóa`, error);
+    removeDraftKey(key);
+    return null;
+  }
+}
+
+function removeDraftKey(key) {
+  try {
+    localStorage.removeItem(key);
+  } catch (error) {
+    console.warn(`Không xóa được nháp localStorage[${key}]`, error);
+  }
+}
+
+// Ghi nháp im lặng: không dùng writeJSON để tránh toast lỗi lặp lại.
+function writeDraftJSON(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+    return true;
+  } catch (error) {
+    console.warn(`Không lưu nháp vào localStorage[${key}]`, error);
+    if (isQuotaExceededError(error) && !draftQuotaWarned) {
+      draftQuotaWarned = true;
+      toast('Không lưu nháp được, đừng tải lại trang', 'warning', 8000);
+    }
+    return false;
+  }
+}
+
+function cloneDraftQuestions(questions) {
+  return questions.map((question) => (
+    isDungSaiQuestion(question)
+      ? { ...question, items: getQuestionItems(question).map((item) => ({ ...item })) }
+      : { ...question, o: Array.isArray(question.o) ? question.o.slice() : question.o }
+  ));
+}
+
+function normalizeDraftCheckQuestion(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const type = raw.type === 'dungsai' ? 'dungsai' : (raw.type === 'tracnghiem' ? 'tracnghiem' : '');
+  if (!type) return null;
+  const id = typeof raw.id === 'string' && raw.id ? raw.id : uid('q');
+  const q = typeof raw.q === 'string' ? raw.q : '';
+  const imageIndex = Number.isInteger(raw.imageIndex) && raw.imageIndex > 0 ? raw.imageIndex : null;
+
+  if (type === 'dungsai') {
+    if (!Array.isArray(raw.items) || raw.items.length < 2 || raw.items.length > 6) return null;
+    const items = [];
+    for (const item of raw.items) {
+      if (!item || typeof item !== 'object') return null;
+      items.push({
+        t: typeof item.t === 'string' ? item.t : '',
+        a: item.a === true || item.a === false ? item.a : null,
+        e: typeof item.e === 'string' ? item.e : '',
+        ai_chon: item.ai_chon === true,
+        do_tin_cay: normalizeConfidence(item.do_tin_cay)
+      });
+    }
+    return {
+      id,
+      type,
+      q,
+      topic: typeof raw.topic === 'string' ? raw.topic : '',
+      items,
+      imageIndex
+    };
+  }
+
+  if (!Array.isArray(raw.o) || raw.o.length !== 4) return null;
+  let answer = null;
+  if (raw.a !== null && raw.a !== undefined && raw.a !== '') {
+    answer = normalizeAnswerIndex(raw.a);
+    if (!isValidAnswer(answer)) return null;
+  }
+  return {
+    id,
+    type,
+    q,
+    o: raw.o.map((option) => (typeof option === 'string' ? option : '')),
+    a: answer,
+    e: typeof raw.e === 'string' ? raw.e : '',
+    aiAnswers: raw.aiAnswers === true || raw.ai_chon === true,
+    ai_chon: raw.ai_chon === true,
+    do_tin_cay: normalizeConfidence(raw.do_tin_cay),
+    imageIndex
+  };
+}
+
+function loadCheckDraft() {
+  const raw = readDraft(STORAGE_KEYS.draftCheck);
+  if (!raw) return null;
+  const savedAt = Number(raw.savedAt);
+  if (
+    typeof raw !== 'object'
+    || raw.version !== CHECK_DRAFT_VERSION
+    || !Number.isFinite(savedAt)
+    || savedAt <= 0
+    || !Array.isArray(raw.questions)
+  ) {
+    clearCheckDraft();
+    return null;
+  }
+
+  const questions = [];
+  for (const item of raw.questions) {
+    const question = normalizeDraftCheckQuestion(item);
+    if (!question) {
+      clearCheckDraft();
+      return null;
+    }
+    questions.push(question);
+  }
+  if (!questions.length) {
+    clearCheckDraft();
+    return null;
+  }
+
+  const errors = Array.isArray(raw.errors)
+    ? raw.errors
+      .filter((error) => error && typeof error === 'object'
+        && typeof error.file === 'string' && typeof error.message === 'string')
+      .map((error) => ({ file: error.file, message: error.message }))
+    : [];
+  const type = [1, 2, 3, 4, 5].includes(Number(raw.type)) ? Number(raw.type) : 5;
+
+  return {
+    version: CHECK_DRAFT_VERSION,
+    savedAt,
+    questions,
+    name: typeof raw.name === 'string' ? raw.name : '',
+    filter: CHECK_FILTERS.includes(raw.filter) ? raw.filter : 'all',
+    type,
+    allowAIAnswer: typeof raw.allowAIAnswer === 'boolean' ? raw.allowAIAnswer : true,
+    errors
+  };
+}
+
+function saveCheckDraft({ immediate = false } = {}) {
+  if (!state.check || state.check.mode !== 'create') return false;
+  if (checkDraftTimer) {
+    window.clearTimeout(checkDraftTimer);
+    checkDraftTimer = null;
+  }
+  if (immediate) return writeCheckDraftNow();
+  checkDraftTimer = window.setTimeout(() => {
+    checkDraftTimer = null;
+    writeCheckDraftNow();
+  }, CHECK_DRAFT_DEBOUNCE_MS);
+  return true;
+}
+
+function writeCheckDraftNow() {
+  const check = state.check;
+  if (!check || check.mode !== 'create') return false;
+  const payload = {
+    version: CHECK_DRAFT_VERSION,
+    savedAt: Date.now(),
+    questions: cloneDraftQuestions(check.questions),
+    name: String(check.name || ''),
+    filter: CHECK_FILTERS.includes(check.filter) ? check.filter : 'all',
+    type: [1, 2, 3, 4, 5].includes(Number(check.type)) ? Number(check.type) : 5,
+    allowAIAnswer: check.allowAIAnswer !== false,
+    // Bỏ url vì blob URL và File không còn sau khi tải lại trang.
+    errors: (Array.isArray(check.errors) ? check.errors : [])
+      .filter((error) => error && typeof error === 'object'
+        && typeof error.file === 'string' && typeof error.message === 'string')
+      .map((error) => ({ file: error.file, message: error.message }))
+  };
+  const saved = writeDraftJSON(STORAGE_KEYS.draftCheck, payload);
+  if (saved) state.checkDraft = payload;
+  return saved;
+}
+
+function clearCheckDraft() {
+  if (checkDraftTimer) {
+    window.clearTimeout(checkDraftTimer);
+    checkDraftTimer = null;
+  }
+  removeDraftKey(STORAGE_KEYS.draftCheck);
+  state.checkDraft = null;
+}
+
+function normalizeDraftPreparedQuestion(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const type = raw.type === 'dungsai' ? 'dungsai' : (raw.type === 'tracnghiem' ? 'tracnghiem' : '');
+  if (!type) return null;
+  const sourceId = typeof raw.sourceId === 'string' ? raw.sourceId : '';
+  const q = typeof raw.q === 'string' ? raw.q : '';
+  const imageIndex = Number.isInteger(raw.imageIndex) && raw.imageIndex > 0 ? raw.imageIndex : null;
+
+  if (type === 'dungsai') {
+    if (!Array.isArray(raw.items) || raw.items.length < 2 || raw.items.length > 6) return null;
+    const items = [];
+    for (const item of raw.items) {
+      if (!item || typeof item !== 'object' || (item.a !== true && item.a !== false)) return null;
+      items.push({
+        t: typeof item.t === 'string' ? item.t : '',
+        a: item.a,
+        e: typeof item.e === 'string' ? item.e : '',
+        ai_chon: item.ai_chon === true,
+        do_tin_cay: normalizeConfidence(item.do_tin_cay)
+      });
+    }
+    return {
+      type,
+      sourceId,
+      q,
+      topic: typeof raw.topic === 'string' ? raw.topic : '',
+      items,
+      imageIndex
+    };
+  }
+
+  if (!Array.isArray(raw.o) || raw.o.length !== 4 || !isValidAnswer(raw.a)) return null;
+  return {
+    type,
+    sourceId,
+    q,
+    o: raw.o.map((option) => (typeof option === 'string' ? option : '')),
+    a: raw.a,
+    e: typeof raw.e === 'string' ? raw.e : '',
+    aiAnswers: raw.aiAnswers === true || raw.ai_chon === true,
+    ai_chon: raw.ai_chon === true,
+    do_tin_cay: normalizeConfidence(raw.do_tin_cay),
+    imageIndex
+  };
+}
+
+function normalizeDraftSessionAnswer(raw, question) {
+  if (isDungSaiQuestion(question)) {
+    const items = getQuestionItems(question);
+    if (!Array.isArray(raw) || raw.length !== items.length) return undefined;
+    if (!raw.every((value) => value === true || value === false || value === null)) return undefined;
+    return raw.slice();
+  }
+  if (raw === null || raw === undefined) return null;
+  return isValidAnswer(raw) ? raw : undefined;
+}
+
+function loadExamDraft() {
+  const raw = readDraft(STORAGE_KEYS.draftExam);
+  if (!raw) return null;
+  const savedAt = Number(raw.savedAt);
+  if (
+    typeof raw !== 'object'
+    || raw.version !== EXAM_DRAFT_VERSION
+    || !Number.isFinite(savedAt)
+    || savedAt <= 0
+    || !raw.session
+    || typeof raw.session !== 'object'
+  ) {
+    clearExamDraft();
+    return null;
+  }
+
+  const sessionRaw = raw.session;
+  if (!Array.isArray(sessionRaw.questions) || !sessionRaw.questions.length) {
+    clearExamDraft();
+    return null;
+  }
+  const questions = [];
+  for (const item of sessionRaw.questions) {
+    const question = normalizeDraftPreparedQuestion(item);
+    if (!question) {
+      clearExamDraft();
+      return null;
+    }
+    questions.push(question);
+  }
+
+  if (!Array.isArray(sessionRaw.answers) || sessionRaw.answers.length !== questions.length) {
+    clearExamDraft();
+    return null;
+  }
+  const answers = [];
+  for (let index = 0; index < questions.length; index += 1) {
+    const answer = normalizeDraftSessionAnswer(sessionRaw.answers[index], questions[index]);
+    if (answer === undefined) {
+      clearExamDraft();
+      return null;
+    }
+    answers.push(answer);
+  }
+
+  const current = Number(sessionRaw.current);
+  const endAt = Number(sessionRaw.endAt);
+  const durationMinutes = Number(sessionRaw.durationMinutes);
+  if (
+    !Number.isInteger(current)
+    || current < 0
+    || current >= questions.length
+    || !Number.isFinite(endAt)
+    || endAt <= 0
+    || !Number.isFinite(durationMinutes)
+    || durationMinutes <= 0
+    || sessionRaw.submitted === true
+  ) {
+    clearExamDraft();
+    return null;
+  }
+
+  return {
+    version: EXAM_DRAFT_VERSION,
+    savedAt,
+    deckId: typeof raw.deckId === 'string' ? raw.deckId : '',
+    deckName: typeof raw.deckName === 'string' ? raw.deckName : '',
+    session: {
+      questions,
+      answers,
+      current,
+      endAt,
+      durationMinutes,
+      submitted: false
+    }
+  };
+}
+
+function saveExamDraft() {
+  const session = state.session;
+  if (!session || session.mode !== 'exam' || session.submitted) return false;
+  const payload = {
+    version: EXAM_DRAFT_VERSION,
+    savedAt: Date.now(),
+    deckId: session.deck && typeof session.deck.id === 'string' ? session.deck.id : '',
+    deckName: session.deck && typeof session.deck.name === 'string' ? session.deck.name : '',
+    session: {
+      questions: cloneDraftQuestions(session.questions),
+      answers: session.answers.map((answer) => (Array.isArray(answer) ? answer.slice() : answer)),
+      current: session.current,
+      endAt: session.endAt,
+      durationMinutes: session.durationMinutes,
+      submitted: false
+    }
+  };
+  const saved = writeDraftJSON(STORAGE_KEYS.draftExam, payload);
+  examDraftSaveFailed = !saved;
+  if (saved) state.examDraft = payload;
+  return saved;
+}
+
+function clearExamDraft() {
+  removeDraftKey(STORAGE_KEYS.draftExam);
+  state.examDraft = null;
+  examDraftSaveFailed = false;
+}
+
+function resolveDraftDeck(draft) {
+  const stored = draft.deckId ? getDeckById(draft.deckId) : null;
+  if (stored) return stored;
+  return {
+    id: '',
+    name: String(draft.deckName || '').trim() || 'Bài thi',
+    createdAt: '',
+    type: 5,
+    questions: []
+  };
+}
+
+function formatDraftSavedAt(value) {
+  const date = new Date(Number(value));
+  if (Number.isNaN(date.getTime())) return 'không rõ';
+  return date.toLocaleString('vi-VN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric'
+  });
+}
+
+function countExamDraftAnswered(draft) {
+  return draft.session.questions.reduce((sum, question, index) => (
+    sum + (isSessionAnswerComplete(question, draft.session.answers[index]) ? 1 : 0)
+  ), 0);
+}
+
+function renderResumeCards() {
+  const cards = [];
+  const checkDraft = state.checkDraft;
+  if (checkDraft) {
+    cards.push(`
+      <section class="card resume-card" aria-labelledby="resumeCheckTitle">
+        <span class="resume-card__icon" aria-hidden="true">${icon('sparkles')}</span>
+        <div class="resume-card__body">
+          <h2 id="resumeCheckTitle">Có kết quả tách chưa lưu</h2>
+          <p>${checkDraft.questions.length} câu · lưu lúc ${esc(formatDraftSavedAt(checkDraft.savedAt))}</p>
+        </div>
+        <div class="resume-card__actions">
+          <button class="btn btn--primary btn--sm" type="button" data-action="resume-check-draft">Khôi phục</button>
+          <button class="btn btn--ghost btn--sm" type="button" data-action="discard-check-draft">Bỏ nháp</button>
+        </div>
+      </section>
+    `);
+  }
+
+  const examDraft = state.examDraft;
+  if (examDraft) {
+    const total = examDraft.session.questions.length;
+    const answered = countExamDraftAnswered(examDraft);
+    const remaining = Math.max(0, Math.ceil((examDraft.session.endAt - Date.now()) / 1000));
+    cards.push(`
+      <section class="card resume-card" aria-labelledby="resumeExamTitle">
+        <span class="resume-card__icon" aria-hidden="true">${icon('clock')}</span>
+        <div class="resume-card__body">
+          <h2 id="resumeExamTitle">Bài thi đang làm dở: ${esc(examDraft.deckName || 'Bài thi')}</h2>
+          <p>Đã làm ${answered}/${total} câu · còn ${esc(formatClock(remaining))}</p>
+        </div>
+        <div class="resume-card__actions">
+          <button class="btn btn--primary btn--sm" type="button" data-action="resume-exam-draft">Tiếp tục thi</button>
+          <button class="btn btn--ghost btn--sm" type="button" data-action="discard-exam-draft">Bỏ bài</button>
+        </div>
+      </section>
+    `);
+  }
+
+  return cards.length ? `<div class="resume-cards">${cards.join('')}</div>` : '';
+}
+
+function resumeCheckDraft() {
+  const draft = state.checkDraft || loadCheckDraft();
+  if (!draft) {
+    state.checkDraft = null;
+    toast('Nháp không còn khả dụng.', 'warning');
+    renderHome();
+    return;
+  }
+  clearExamClock();
+  state.session = null;
+  state.result = null;
+  state.setup = null;
+  state.check = {
+    mode: 'create',
+    questions: cloneDraftQuestions(draft.questions),
+    errors: draft.errors.map((error) => ({ file: error.file, message: error.message })),
+    type: draft.type,
+    allowAIAnswer: draft.allowAIAnswer,
+    name: draft.name,
+    filter: draft.filter
+  };
+  state.checkDraft = draft;
+  renderCheck();
+  toast('Đã khôi phục kết quả tách. Ảnh gốc không còn nên không thể thử lại ảnh lỗi.', 'info', 6000);
+}
+
+function resumeExamDraft() {
+  const draft = state.examDraft || loadExamDraft();
+  if (!draft) {
+    state.examDraft = null;
+    toast('Bài thi đang làm dở không còn khả dụng.', 'warning');
+    renderHome();
+    return;
+  }
+  if (Date.now() >= draft.session.endAt) {
+    autoSubmitExamDraft(draft);
+    return;
+  }
+  clearExamClock();
+  state.result = null;
+  state.check = null;
+  state.setup = null;
+  state.session = {
+    mode: 'exam',
+    deck: resolveDraftDeck(draft),
+    questions: cloneDraftQuestions(draft.session.questions),
+    answers: draft.session.answers.map((answer) => (Array.isArray(answer) ? answer.slice() : answer)),
+    current: draft.session.current,
+    endAt: draft.session.endAt,
+    durationMinutes: draft.session.durationMinutes,
+    submitted: false
+  };
+  state.examDraft = null;
+  renderExam();
+  scrollToTop();
+}
+
+function autoSubmitExamDraft(draft) {
+  const session = {
+    mode: 'exam',
+    deck: resolveDraftDeck(draft),
+    questions: cloneDraftQuestions(draft.session.questions),
+    answers: draft.session.answers.map((answer) => (Array.isArray(answer) ? answer.slice() : answer)),
+    current: draft.session.current,
+    endAt: draft.session.endAt,
+    durationMinutes: draft.session.durationMinutes,
+    submitted: false
+  };
+  clearExamClock();
+  const result = buildResult(session, true);
+  saveSessionHistory(result);
+  state.result = result;
+  state.session = null;
+  state.examDraft = null;
+  renderResult();
+  clearExamDraft();
+  scrollToTop();
+  toast('Bài thi đã hết giờ khi bạn không có mặt, đã tự nộp.', 'warning', 7000);
+}
+
 function toast(message, type = 'info', duration = 4500) {
   if (!toastContainer) return;
   const safeTypes = ['success', 'error', 'warning', 'info'];
@@ -650,6 +1187,8 @@ function renderHome() {
         <span class="hero__stat">${icon('shield')} Lưu bằng localStorage</span>
       </div>
     </section>
+
+    ${renderResumeCards()}
 
     <div class="home-grid">
       <section class="card upload-card" aria-labelledby="uploadTitle">
@@ -1412,6 +1951,11 @@ async function startExtraction() {
     return;
   }
 
+  if (state.checkDraft || loadCheckDraft()) {
+    if (!window.confirm('Nháp cũ chưa lưu sẽ bị thay thế, tiếp tục?')) return;
+    clearCheckDraft();
+  }
+
   const entries = state.selectedImages.slice();
   const type = 5;
   const allowAIAnswer = Boolean(state.allowAIAnswer);
@@ -1460,6 +2004,7 @@ async function startExtraction() {
     state.session = null;
     state.result = null;
     renderCheck();
+    saveCheckDraft();
 
     if (aborted) {
       toast(`Đã hủy tách câu hỏi. Giữ lại ${allQuestions.length} câu đã đọc được.`, 'warning', 5000);
@@ -1474,7 +2019,7 @@ async function startExtraction() {
 async function retryFailedImages() {
   if (state.processing || !state.check) return;
   const check = state.check;
-  const failedUrls = new Set(check.errors.map((error) => error.url).filter(Boolean));
+  const failedUrls = new Set(check.errors.map((error) => error && error.url).filter(Boolean));
   const entries = state.selectedImages.filter((item) => failedUrls.has(item.url));
   if (!entries.length) {
     toast('Không còn ảnh lỗi để thử lại. Hãy quay lại và chọn lại ảnh.', 'warning', 6000);
@@ -1517,11 +2062,12 @@ async function retryFailedImages() {
 
     const retriedUrls = new Set(entries.map((item) => item.url));
     check.errors = check.errors
-      .filter((error) => !retriedUrls.has(error.url))
+      .filter((error) => !retriedUrls.has(error && error.url))
       .concat(result.errors);
     check.questions.push(...result.allQuestions);
     check.filter = 'all';
     renderCheck({ scroll: false });
+    saveCheckDraft();
 
     if (result.aborted) {
       toast('Đã hủy thử lại ảnh lỗi.', 'warning', 5000);
@@ -1724,7 +2270,7 @@ function renderCheck({ scroll = true } = {}) {
         ? 'Tất cả câu hỏi và các ý đã có đáp án.'
         : 'Không có câu hỏi nào để hiển thị.';
   const retryableErrors = check.errors.filter((error) => (
-    error.url && state.selectedImages.some((item) => item.url === error.url)
+    error && error.url && state.selectedImages.some((item) => item.url === error.url)
   ));
 
   app.innerHTML = `
@@ -1765,7 +2311,9 @@ function renderCheck({ scroll = true } = {}) {
             <div class="error-list__actions">
               <button class="btn btn--soft btn--sm" type="button" data-action="retry-failed-images" ${state.processing ? 'disabled' : ''}>${icon('refresh')} Thử lại các ảnh lỗi</button>
             </div>
-          ` : ''}
+          ` : (!isEdit ? `
+            <p class="error-list__hint">Ảnh gốc không còn để thử lại. Chọn lại ảnh ở trang chủ nếu cần.</p>
+          ` : '')}
         </section>
       ` : ''}
 
@@ -2172,6 +2720,7 @@ function savePendingCheck() {
   };
   if (!writeJSON(STORAGE_KEYS.decks, [deck, ...decks])) return;
 
+  clearCheckDraft();
   state.check = null;
   state.session = null;
   state.result = null;
@@ -2191,6 +2740,7 @@ function cancelCheck() {
   } else {
     const hasData = state.check.questions.length || state.check.errors.length;
     if (hasData && !window.confirm('Hủy kết quả đã tách? Các chỉnh sửa hiện tại sẽ bị mất.')) return;
+    clearCheckDraft();
   }
 
   state.check = null;
@@ -2204,6 +2754,7 @@ function deleteCheckQuestion(questionId) {
   if (index === -1) return;
   state.check.questions.splice(index, 1);
   renderCheck();
+  saveCheckDraft();
 }
 
 function addCheckQuestion() {
@@ -2223,6 +2774,7 @@ function addCheckQuestion() {
   });
   state.check.filter = 'all';
   renderCheck({ scroll: false });
+  saveCheckDraft();
 
   const field = document.getElementById(`question-${id}`);
   if (!field) return;
@@ -2250,6 +2802,7 @@ function addDungSaiQuestion() {
   });
   state.check.filter = 'all';
   renderCheck({ scroll: false });
+  saveCheckDraft();
 
   const field = document.getElementById(`question-${id}`);
   if (!field) return;
@@ -2269,6 +2822,7 @@ function addDungSaiItem(questionId) {
   }
   items.push({ t: '', a: null, e: '', ai_chon: false, do_tin_cay: '' });
   renderCheck({ scroll: false });
+  saveCheckDraft();
   const field = app.querySelector(`.check-card[data-qid="${questionId}"] .ds-editor[data-index="${items.length - 1}"] [data-field="item-t"]`);
   if (field) {
     field.focus({ preventScroll: true });
@@ -2288,6 +2842,7 @@ function removeDungSaiItem(questionId, itemIndex) {
   if (!Number.isInteger(itemIndex) || itemIndex < 0 || itemIndex >= items.length) return;
   items.splice(itemIndex, 1);
   renderCheck({ scroll: false });
+  saveCheckDraft();
 }
 
 /* =========================================================
@@ -3151,6 +3706,11 @@ function startExam(deck, options = {}) {
     return;
   }
 
+  if (state.examDraft || loadExamDraft()) {
+    if (!window.confirm('Có bài thi đang làm dở. Bắt đầu bài thi mới sẽ thay thế bài cũ, tiếp tục?')) return;
+  }
+  clearExamDraft();
+
   clearExamClock();
   const questions = selectSessionQuestions(deck.questions, options)
     .map((question) => prepareSessionQuestion(question, options.shuffleAnswers !== false));
@@ -3169,6 +3729,7 @@ function startExam(deck, options = {}) {
     durationMinutes,
     submitted: false
   };
+  saveExamDraft();
   renderExam();
   scrollToTop();
 }
@@ -3567,6 +4128,7 @@ function chooseExamAnswer(index) {
   if (isDungSaiQuestion(question)) return;
   if (!isValidAnswer(index)) return;
   session.answers[session.current] = index;
+  saveExamDraft();
   renderExam();
 }
 
@@ -3582,6 +4144,7 @@ function chooseExamDungSaiItem(itemIndex, value) {
     : items.map(() => null);
   answer[itemIndex] = value === true;
   session.answers[session.current] = answer;
+  saveExamDraft();
   const scrollY = window.scrollY;
   renderExam();
   window.scrollTo({ top: scrollY, behavior: 'auto' });
@@ -3593,6 +4156,7 @@ function moveExamQuestion(delta) {
   const next = session.current + delta;
   if (next < 0 || next >= session.questions.length) return;
   session.current = next;
+  saveExamDraft();
   renderExam();
   scrollToTop();
 }
@@ -4034,6 +4598,7 @@ function submitExam(auto = false) {
   clearExamClock();
   const result = buildResult(session, auto);
   saveSessionHistory(result);
+  clearExamDraft();
   state.result = result;
   state.session = null;
   renderResult();
@@ -4079,6 +4644,8 @@ function goHome(force = false) {
   }
 
   clearExamClock();
+  if (state.session?.mode === 'exam') clearExamDraft();
+  if (state.check?.mode === 'create') clearCheckDraft();
   state.session = null;
   state.result = null;
   state.check = null;
@@ -4271,6 +4838,26 @@ function onAppClick(event) {
       break;
     }
 
+    case 'resume-check-draft':
+      resumeCheckDraft();
+      break;
+
+    case 'discard-check-draft':
+      clearCheckDraft();
+      renderHome();
+      toast('Đã bỏ nháp.', 'success', 2500);
+      break;
+
+    case 'resume-exam-draft':
+      resumeExamDraft();
+      break;
+
+    case 'discard-exam-draft':
+      clearExamDraft();
+      renderHome();
+      toast('Đã bỏ bài thi đang làm dở.', 'success', 2500);
+      break;
+
     case 'cancel-check':
       cancelCheck();
       break;
@@ -4281,6 +4868,7 @@ function onAppClick(event) {
       if (!CHECK_FILTERS.includes(filter)) return;
       state.check.filter = filter;
       renderCheck({ scroll: false });
+      saveCheckDraft();
       break;
     }
 
@@ -4370,6 +4958,7 @@ function onAppClick(event) {
       const index = Number(actionElement.dataset.index);
       if (!Number.isInteger(index) || index < 0 || index >= session.questions.length) return;
       session.current = index;
+      saveExamDraft();
       renderExam();
       scrollToTop();
       break;
@@ -4452,6 +5041,7 @@ function onAppChange(event) {
     question.do_tin_cay = '';
     const keepScroll = state.check.filter === 'missing' ? window.scrollY : null;
     renderCheck({ scroll: false });
+    saveCheckDraft();
     if (keepScroll !== null) window.scrollTo({ top: keepScroll, behavior: 'auto' });
     return;
   }
@@ -4472,6 +5062,7 @@ function onAppChange(event) {
     question.aiAnswers = false;
     const keepScroll = state.check.filter === 'missing' ? window.scrollY : null;
     renderCheck({ scroll: false });
+    saveCheckDraft();
     if (keepScroll !== null) window.scrollTo({ top: keepScroll, behavior: 'auto' });
   }
 }
@@ -4500,6 +5091,7 @@ function onAppInput(event) {
 
   if (target.id === 'checkName') {
     state.check.name = target.value;
+    saveCheckDraft();
     return;
   }
 
@@ -4526,6 +5118,7 @@ function onAppInput(event) {
     else items[index].e = target.value;
   }
   updateCheckStatus();
+  saveCheckDraft();
 }
 
 function onAppSubmit(event) {
@@ -4696,13 +5289,23 @@ function bindEvents() {
   });
 
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) checkExamDeadline();
+    if (document.hidden) {
+      saveCheckDraft({ immediate: true });
+      saveExamDraft();
+      return;
+    }
+    checkExamDeadline();
+  });
+
+  window.addEventListener('pagehide', () => {
+    saveCheckDraft({ immediate: true });
+    saveExamDraft();
   });
 
   window.addEventListener('beforeunload', (event) => {
-    const hasActiveExam = state.session && state.session.mode === 'exam';
+    const examNeedsWarning = state.session?.mode === 'exam' && examDraftSaveFailed;
     const hasUnsavedDeckEdit = state.check?.mode === 'edit' && isCheckDirty();
-    if (state.processing || hasActiveExam || hasUnsavedDeckEdit) {
+    if (state.processing || examNeedsWarning || hasUnsavedDeckEdit) {
       event.preventDefault();
       event.returnValue = '';
     }
@@ -4717,6 +5320,12 @@ function init() {
   hydrateSettingsForm(state.cfg);
   applyTheme(getSavedTheme(), false);
   bindEvents();
+  state.checkDraft = loadCheckDraft();
+  state.examDraft = loadExamDraft();
+  if (state.examDraft && Date.now() >= state.examDraft.session.endAt) {
+    autoSubmitExamDraft(state.examDraft);
+    return;
+  }
   renderHome();
 }
 
